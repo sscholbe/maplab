@@ -336,9 +336,8 @@ int OptimizerPlugin::createCameraSegments() {
         last_segment_ns = current_time_ns;
 
         // Clone the reference camera and add it to the sensor manager
-        aslam::NCamera* clone_raw = reference_camera.cloneWithNewIds();
-        aslam::SensorId clone_id = clone_raw->getId();
-        aslam::NCamera::UniquePtr clone_ptr(clone_raw);
+        aslam::NCamera::UniquePtr clone_ptr(reference_camera.cloneWithNewIds());
+        aslam::SensorId clone_id = clone_ptr->getId();
         if (sensor_manager.isBaseSensor(reference_camera.getId())) {
           sensor_manager.addSensorAsBase<aslam::NCamera>(std::move(clone_ptr));
         } else {
