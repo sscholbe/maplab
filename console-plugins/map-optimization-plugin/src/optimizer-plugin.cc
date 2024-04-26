@@ -20,6 +20,10 @@ DEFINE_string(
     "yaml file containing the loop "
     "closures for the pose graph relaxation.");
 
+DEFINE_double(
+    camera_segment_duration, 60.0,
+    "Duration of the camera segments in seconds.");
+
 namespace map_optimization_plugin {
 OptimizerPlugin::OptimizerPlugin(
     common::Console* console, visualization::ViwlsGraphRvizPlotter* plotter)
@@ -94,6 +98,12 @@ OptimizerPlugin::OptimizerPlugin(
       "are removed from the map again. Set the path to the yaml file "
       "containing the loop closure constraints with the flag "
       "--external_loop_closures_file",
+      common::Processing::Sync);
+  addCommand(
+      {"create_camera_segments"},
+      [this]() -> int { return createCameraSegments(); },
+      "This command creates new cameras after --camera_segment_duration "
+      "seconds",
       common::Processing::Sync);
 }
 
@@ -275,6 +285,80 @@ int OptimizerPlugin::relaxMapMissionsSeparately() {
 
   return common::kSuccess;
 }
+
+int OptimizerPlugin::createCameraSegments() {
+  std::string selected_map_key;
+  if (!getSelectedMapKeyIfSet(&selected_map_key)) {
+    return common::kStupidUserError;
+  }
+
+  vi_map::VIMapManager map_manager;
+  vi_map::VIMapManager::MapWriteAccess map =
+      map_manager.getMapWriteAccess(selected_map_key);
+
+  vi_map::SensorManager& sensor_manager = map->getSensorManager();
+  if (!sensor_manager.hasSensorOfType(vi_map::SensorType::kNCamera)) {
+    LOG(INFO) << "Map does not contain any camera.";
+    return common::kSuccess;
+  }
+
+  vi_map::MissionIdList mission_id_list;
+  map->getAllMissionIds(&mission_id_list);
+
+  size_t num_segments = 0;
+  size_t segment_duration_ns =
+      aslam::time::secondsToNanoSeconds(FLAGS_camera_segment_duration);
+
+  for (const vi_map::MissionId& mission_id : mission_id_list) {
+    const size_t num_vertices = map->numVerticesInMission(mission_id);
+    if (num_vertices == 0) {
+      continue;
+    }
+
+    // Use the original mission camera as our reference and create clones of it
+    // for each segment in the mission
+    const aslam::NCamera& reference_camera = map->getMissionNCamera(mission_id);
+
+    pose_graph::VertexId current_vertex_id =
+        map->getMission(mission_id).getRootVertexId();
+    bool is_root_vertex = true;
+    size_t last_segment_ns;
+    aslam::NCamera::Ptr segment_camera;
+
+    do {
+      vi_map::Vertex& current_vertex = map->getVertex(current_vertex_id);
+      size_t current_time_ns = current_vertex.getMinTimestampNanoseconds();
+
+      if (is_root_vertex ||
+          current_time_ns - last_segment_ns >= segment_duration_ns) {
+        // We are at the start of a new segment
+        is_root_vertex = false;
+        last_segment_ns = current_time_ns;
+
+        // Clone the reference camera and add it to the sensor manager
+        aslam::NCamera* clone_raw = reference_camera.cloneWithNewIds();
+        aslam::SensorId clone_id = clone_raw->getId();
+        aslam::NCamera::UniquePtr clone_ptr(clone_raw);
+        if (sensor_manager.isBaseSensor(reference_camera.getId())) {
+          sensor_manager.addSensorAsBase<aslam::NCamera>(std::move(clone_ptr));
+        } else {
+          sensor_manager.addSensor<aslam::NCamera>(
+              std::move(clone_ptr),
+              sensor_manager.getBaseSensorId(reference_camera.getId()),
+              sensor_manager.getSensor_T_B_S(reference_camera.getId()));
+        }
+        segment_camera = sensor_manager.getSensorPtr<aslam::NCamera>(clone_id);
+        num_segments++;
+      }
+      current_vertex.setNCameras(segment_camera);
+    } while (map->getNextVertex(current_vertex_id, &current_vertex_id));
+  }
+
+  LOG(INFO) << "Created " << num_segments << " segment cameras";
+
+  return common::kSuccess;
+}
+
 }  // namespace map_optimization_plugin
 
 MAPLAB_CREATE_CONSOLE_PLUGIN_WITH_PLOTTER(
