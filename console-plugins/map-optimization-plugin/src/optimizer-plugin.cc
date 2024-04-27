@@ -316,7 +316,9 @@ int OptimizerPlugin::createCameraSegments() {
     }
 
     // Use the original mission camera as our reference and create clones of it
-    // for each segment in the mission
+    // for each segment in the mission but keep the original for the first
+    // segment
+
     const aslam::NCamera& reference_camera = map->getMissionNCamera(mission_id);
 
     pose_graph::VertexId current_vertex_id =
@@ -324,6 +326,7 @@ int OptimizerPlugin::createCameraSegments() {
     bool is_root_vertex = true;
     size_t last_segment_ns;
     aslam::NCamera::Ptr segment_camera;
+    bool is_first_segment = true;
 
     do {
       vi_map::Vertex& current_vertex = map->getVertex(current_vertex_id);
@@ -332,24 +335,35 @@ int OptimizerPlugin::createCameraSegments() {
       if (is_root_vertex ||
           current_time_ns - last_segment_ns >= segment_duration_ns) {
         // We are at the start of a new segment
+        if (!is_root_vertex) {
+          is_first_segment = false;
+        }
+
+        num_segments++;
         is_root_vertex = false;
         last_segment_ns = current_time_ns;
 
-        // Clone the reference camera and add it to the sensor manager
-        aslam::NCamera::UniquePtr clone_ptr(reference_camera.cloneWithNewIds());
-        aslam::SensorId clone_id = clone_ptr->getId();
-        if (sensor_manager.isBaseSensor(reference_camera.getId())) {
-          sensor_manager.addSensorAsBase<aslam::NCamera>(std::move(clone_ptr));
-        } else {
-          sensor_manager.addSensor<aslam::NCamera>(
-              std::move(clone_ptr),
-              sensor_manager.getBaseSensorId(reference_camera.getId()),
-              sensor_manager.getSensor_T_B_S(reference_camera.getId()));
+        if (!is_first_segment) {
+          // Clone the reference camera and add it to the sensor manager
+          aslam::NCamera::UniquePtr clone_ptr(
+              reference_camera.cloneWithNewIds());
+          aslam::SensorId clone_id = clone_ptr->getId();
+          if (sensor_manager.isBaseSensor(reference_camera.getId())) {
+            sensor_manager.addSensorAsBase<aslam::NCamera>(
+                std::move(clone_ptr));
+          } else {
+            sensor_manager.addSensor<aslam::NCamera>(
+                std::move(clone_ptr),
+                sensor_manager.getBaseSensorId(reference_camera.getId()),
+                sensor_manager.getSensor_T_B_S(reference_camera.getId()));
+          }
+          segment_camera =
+              sensor_manager.getSensorPtr<aslam::NCamera>(clone_id);
         }
-        segment_camera = sensor_manager.getSensorPtr<aslam::NCamera>(clone_id);
-        num_segments++;
       }
-      current_vertex.setNCameras(segment_camera);
+      if (!is_first_segment) {
+        current_vertex.setNCameras(segment_camera);
+      }
     } while (map->getNextVertex(current_vertex_id, &current_vertex_id));
   }
 
