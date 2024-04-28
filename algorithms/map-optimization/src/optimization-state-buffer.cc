@@ -229,6 +229,16 @@ void OptimizationStateBuffer::importCameraCalibrationsOfMissions(
       const aslam::NCamera& ncamera = map.getMissionNCamera(mission_id);
       num_cameras += ncamera.getNumCameras();
       ncameras.emplace_back(&ncamera);
+
+      // Add the additional cameras for every segment if the mission was split
+      for (const aslam::SensorId& segment_ncamera_id :
+           map.getMission(mission_id).getSegmentNCameraIds()) {
+        const aslam::NCamera& segment_ncamera =
+            map.getSensorManager().getSensor<aslam::NCamera>(
+                segment_ncamera_id);
+        num_cameras += segment_ncamera.getNumCameras();
+        ncameras.emplace_back(&segment_ncamera);
+      }
     }
   }
   camera_q_CI__C_p_CI_.resize(Eigen::NoChange, num_cameras);
@@ -268,8 +278,7 @@ void OptimizationStateBuffer::importOtherSensorExtrinsicsOfMissions(
   for (const vi_map::MissionId& mission_id : mission_ids) {
     const vi_map::VIMission& mission = map.getMission(mission_id);
     if (mission.hasAbsolute6DoFSensor()) {
-      other_sensor_ids.emplace_back(
-          mission.getAbsolute6DoFSensor());
+      other_sensor_ids.emplace_back(mission.getAbsolute6DoFSensor());
     }
 
     if (mission.hasOdometry6DoFSensor()) {

@@ -56,6 +56,7 @@ class VIMission : public Mission {
     is_same &= odometry_6dof_id_ == lhs.odometry_6dof_id_;
     is_same &= loop_closure_id_ == lhs.loop_closure_id_;
     is_same &= absolute_6dof_id_ == lhs.absolute_6dof_id_;
+    is_same &= segment_ncamera_ids_ == lhs.segment_ncamera_ids_;
 
     is_same &= type_to_resource_id_map_ == lhs.type_to_resource_id_map_;
     is_same &= sensor_resources_ == lhs.sensor_resources_;
@@ -87,6 +88,10 @@ class VIMission : public Mission {
   const aslam::SensorId& getLoopClosureSensor() const;
   const aslam::SensorId& getAbsolute6DoFSensor() const;
   const aslam::SensorId& getWheelOdometrySensor() const;
+
+  const aslam::SensorIdList& getSegmentNCameraIds() const;
+  void addSegmentNCameraId(const aslam::SensorId& ncamera_id);
+  void deleteSegmentNCameraId(const aslam::SensorId& ncamera_id);
 
   bool hasNCamera() const;
   bool hasImu() const;
@@ -200,6 +205,11 @@ class VIMission : public Mission {
   aslam::SensorId loop_closure_id_;
   aslam::SensorId absolute_6dof_id_;
   aslam::SensorId wheel_odometry_id_;
+
+  // Contains the additional cameras that were created when splitting the
+  // "main" camera over the mission into segments. Is empty, if no splitting was
+  // performed or the mission was too short.
+  aslam::SensorIdList segment_ncamera_ids_;
 
   // This container stores a resource type to resource id mapping. It is uses to
   // associate resources with a set of missions.

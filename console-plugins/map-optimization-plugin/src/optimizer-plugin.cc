@@ -19,7 +19,6 @@ DEFINE_string(
     relax_external_loop_closures_file, "",
     "yaml file containing the loop "
     "closures for the pose graph relaxation.");
-
 DEFINE_double(
     camera_segment_duration, 60.0,
     "Duration of the camera segments in seconds.");
@@ -314,10 +313,21 @@ int OptimizerPlugin::createCameraSegments() {
     if (num_vertices == 0) {
       continue;
     }
+    vi_map::VIMission& mission = map->getMission(mission_id);
+    if (!mission.hasNCamera()) {
+      continue;
+    }
+    if (!mission.getSegmentNCameraIds().empty()) {
+      // TODO(sscholbe): How should we handle calling the command multiple
+      // times?
+      LOG(INFO) << "Mission " << mission_id.shortHex()
+                << " already contains camera segments. Skipping.";
+      continue;
+    }
 
-    // Use the original mission camera as our reference and create clones of it
-    // for each segment in the mission but keep the original for the first
-    // segment
+    // Use the original mission camera as our reference and create clones of
+    // it for each segment in the mission. Keep the original for the first
+    // segment.
 
     const aslam::NCamera& reference_camera = map->getMissionNCamera(mission_id);
 
@@ -339,7 +349,6 @@ int OptimizerPlugin::createCameraSegments() {
           is_first_segment = false;
         }
 
-        num_segments++;
         is_root_vertex = false;
         last_segment_ns = current_time_ns;
 
@@ -349,6 +358,7 @@ int OptimizerPlugin::createCameraSegments() {
               reference_camera.cloneWithNewIds());
           aslam::SensorId clone_id = clone_ptr->getId();
           if (sensor_manager.isBaseSensor(reference_camera.getId())) {
+            // TODO(sscholbe): Can a camera be a base sensor?
             sensor_manager.addSensorAsBase<aslam::NCamera>(
                 std::move(clone_ptr));
           } else {
@@ -359,6 +369,8 @@ int OptimizerPlugin::createCameraSegments() {
           }
           segment_camera =
               sensor_manager.getSensorPtr<aslam::NCamera>(clone_id);
+          mission.addSegmentNCameraId(clone_id);
+          num_segments++;
         }
       }
       if (!is_first_segment) {

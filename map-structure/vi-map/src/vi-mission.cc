@@ -28,6 +28,7 @@ VIMission::VIMission(const VIMission& other)
       loop_closure_id_(other.loop_closure_id_),
       absolute_6dof_id_(other.absolute_6dof_id_),
       wheel_odometry_id_(other.wheel_odometry_id_),
+      segment_ncamera_ids_{other.segment_ncamera_ids_},
       type_to_resource_id_map_(other.type_to_resource_id_map_),
       sensor_resources_(other.sensor_resources_) {}
 
@@ -122,6 +123,21 @@ const aslam::SensorId& VIMission::getWheelOdometrySensor() const {
       << "There is no valid wheel odometry Sensor ID associated with mission "
       << mission_id_.shortHex() << "!";
   return wheel_odometry_id_;
+}
+
+const aslam::SensorIdList& VIMission::getSegmentNCameraIds() const {
+  return segment_ncamera_ids_;
+}
+
+void VIMission::addSegmentNCameraId(const aslam::SensorId& ncamera_id) {
+  segment_ncamera_ids_.push_back(ncamera_id);
+}
+
+void VIMission::deleteSegmentNCameraId(const aslam::SensorId& ncamera_id) {
+  aslam::SensorIdList::iterator it = std::find(
+      segment_ncamera_ids_.begin(), segment_ncamera_ids_.end(), ncamera_id);
+  CHECK(it != segment_ncamera_ids_.end());
+  segment_ncamera_ids_.erase(it);
 }
 
 bool VIMission::hasNCamera() const {
