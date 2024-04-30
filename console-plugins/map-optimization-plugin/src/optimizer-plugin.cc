@@ -290,6 +290,10 @@ int OptimizerPlugin::createCameraSegments() {
   if (!getSelectedMapKeyIfSet(&selected_map_key)) {
     return common::kStupidUserError;
   }
+  if (FLAGS_camera_segment_duration < 1) {
+    LOG(ERROR) << "The segment duration is too short.";
+    return common::kStupidUserError;
+  }
 
   vi_map::VIMapManager map_manager;
   vi_map::VIMapManager::MapWriteAccess map =
@@ -304,17 +308,16 @@ int OptimizerPlugin::createCameraSegments() {
   vi_map::MissionIdList mission_id_list;
   map->getAllMissionIds(&mission_id_list);
 
-  size_t num_segments = 0;
-  size_t segment_duration_ns =
-      aslam::time::secondsToNanoSeconds(FLAGS_camera_segment_duration);
-
   for (const vi_map::MissionId& mission_id : mission_id_list) {
-    const size_t num_vertices = map->numVerticesInMission(mission_id);
-    if (num_vertices == 0) {
+    if (map->numVerticesInMission(mission_id) == 0) {
+      LOG(INFO) << "Mission " << mission_id.shortHex()
+                << " contains no vertices. Skipping.";
       continue;
     }
     vi_map::VIMission& mission = map->getMission(mission_id);
     if (!mission.hasNCamera()) {
+      LOG(INFO) << "Mission " << mission_id.shortHex()
+                << " contains no camera. Skipping.";
       continue;
     }
     if (!mission.getSegmentNCameraIds().empty()) {
@@ -325,61 +328,67 @@ int OptimizerPlugin::createCameraSegments() {
       continue;
     }
 
-    // Use the original mission camera as our reference and create clones of
-    // it for each segment in the mission. Keep the original for the first
-    // segment.
+    // Use the original mission camera as our reference
+    const aslam::NCamera::Ptr reference_camera =
+        map->getMissionNCameraPtr(mission_id);
 
-    const aslam::NCamera& reference_camera = map->getMissionNCamera(mission_id);
+    pose_graph::VertexIdList vertex_ids;
+    map->getAllVertexIdsInMissionAlongGraph(mission_id, &vertex_ids);
 
-    pose_graph::VertexId current_vertex_id =
-        map->getMission(mission_id).getRootVertexId();
-    bool is_root_vertex = true;
-    size_t last_segment_ns;
-    aslam::NCamera::Ptr segment_camera;
-    bool is_first_segment = true;
+    // Represents the timestamps for a segment in nanoseconds, excluding the end
+    typedef std::pair<size_t, size_t> Segment;
 
-    do {
-      vi_map::Vertex& current_vertex = map->getVertex(current_vertex_id);
-      size_t current_time_ns = current_vertex.getMinTimestampNanoseconds();
+    // Compute the segments based on the desired duration
+    std::vector<Segment> segments;
+    size_t segment_duration_ns =
+        aslam::time::secondsToNanoSeconds(FLAGS_camera_segment_duration);
+    size_t start_time_ns =
+        map->getVertex(vertex_ids.front()).getMinTimestampNanoseconds();
+    size_t end_time_ns =
+        map->getVertex(vertex_ids.back()).getMinTimestampNanoseconds();
+    for (size_t time_ns = start_time_ns; time_ns <= end_time_ns;
+         time_ns += segment_duration_ns) {
+      segments.push_back(
+          std::make_pair(time_ns, time_ns + segment_duration_ns));
+    }
 
-      if (is_root_vertex ||
-          current_time_ns - last_segment_ns >= segment_duration_ns) {
-        // We are at the start of a new segment
-        if (!is_root_vertex) {
-          is_first_segment = false;
-        }
+    std::vector<aslam::NCamera::Ptr> cameras;
 
-        is_root_vertex = false;
-        last_segment_ns = current_time_ns;
+    // The first segment will use the reference camera
+    cameras.push_back(reference_camera);
 
-        if (!is_first_segment) {
-          // Clone the reference camera and add it to the sensor manager
-          aslam::NCamera::UniquePtr clone_ptr(
-              reference_camera.cloneWithNewIds());
-          aslam::SensorId clone_id = clone_ptr->getId();
-          if (sensor_manager.isBaseSensor(reference_camera.getId())) {
-            // TODO(sscholbe): Can a camera be a base sensor?
-            sensor_manager.addSensorAsBase<aslam::NCamera>(
-                std::move(clone_ptr));
-          } else {
-            sensor_manager.addSensor<aslam::NCamera>(
-                std::move(clone_ptr),
-                sensor_manager.getBaseSensorId(reference_camera.getId()),
-                sensor_manager.getSensor_T_B_S(reference_camera.getId()));
-          }
-          segment_camera =
-              sensor_manager.getSensorPtr<aslam::NCamera>(clone_id);
-          mission.addSegmentNCameraId(clone_id);
-          num_segments++;
-        }
+    // The other segments will have their copy of the reference camera
+    for (size_t i = 1; i < segments.size(); i++) {
+      aslam::NCamera::UniquePtr clone_ptr(reference_camera->cloneWithNewIds());
+      aslam::SensorId clone_id = clone_ptr->getId();
+      if (sensor_manager.isBaseSensor(reference_camera->getId())) {
+        // TODO(sscholbe): Can a camera be a base sensor?
+        sensor_manager.addSensorAsBase<aslam::NCamera>(std::move(clone_ptr));
+      } else {
+        sensor_manager.addSensor<aslam::NCamera>(
+            std::move(clone_ptr),
+            sensor_manager.getBaseSensorId(reference_camera->getId()),
+            sensor_manager.getSensor_T_B_S(reference_camera->getId()));
       }
-      if (!is_first_segment) {
-        current_vertex.setNCameras(segment_camera);
+      cameras.push_back(sensor_manager.getSensorPtr<aslam::NCamera>(clone_id));
+    }
+
+    // Traverse the vertices and assign them to the corresponding segment camera
+    std::vector<Segment>::iterator current_segment = segments.begin();
+    std::vector<aslam::NCamera::Ptr>::iterator current_camera = cameras.begin();
+    for (const pose_graph::VertexId& vertex_id : vertex_ids) {
+      vi_map::Vertex& vertex = map->getVertex(vertex_id);
+      size_t time_ns = vertex.getMinTimestampNanoseconds();
+      while (time_ns >= current_segment->second) {
+        current_segment++;
+        current_camera++;
       }
-    } while (map->getNextVertex(current_vertex_id, &current_vertex_id));
+      vertex.setNCameras(*current_camera);
+    }
+
+    LOG(INFO) << "Created " << segments.size() << " segments for mission "
+              << mission_id.shortHex();
   }
-
-  LOG(INFO) << "Created " << num_segments << " segment cameras";
 
   return common::kSuccess;
 }
