@@ -371,6 +371,7 @@ int OptimizerPlugin::createCameraSegments() {
             sensor_manager.getSensor_T_B_S(reference_camera->getId()));
       }
       cameras.push_back(sensor_manager.getSensorPtr<aslam::NCamera>(clone_id));
+      mission.addSegmentNCameraId(clone_id);
     }
 
     // Traverse the vertices and assign them to the corresponding segment camera
