@@ -107,7 +107,9 @@ struct ViProblemOptions {
 // Caller takes ownership.
 OptimizationProblem* constructOptimizationProblem(
     const vi_map::MissionIdSet& mission_ids, const ViProblemOptions& options,
-    vi_map::VIMap* map);
+    vi_map::VIMap* map,
+    std::vector<std::pair<double, double>>* intrinsics_bounds = nullptr,
+    aslam::NCamera::Ptr base_cam = nullptr);
 
 }  // namespace map_optimization
 #endif  // MAP_OPTIMIZATION_VI_OPTIMIZATION_BUILDER_H_

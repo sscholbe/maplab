@@ -27,11 +27,15 @@ class VIMapOptimizer {
   bool optimize(
       const map_optimization::ViProblemOptions& options,
       const vi_map::MissionIdSet& missions_to_optimize, vi_map::VIMap* map,
-      OptimizationProblemResult* result);
+      OptimizationProblemResult* result,
+      std::vector<std::pair<double, double>>* intrinsics_bounds = nullptr,
+      aslam::NCamera::Ptr base_cam = nullptr);
 
   bool optimize(
       const map_optimization::ViProblemOptions& options,
-      const vi_map::MissionIdSet& missions_to_optimize, vi_map::VIMap* map);
+      const vi_map::MissionIdSet& missions_to_optimize, vi_map::VIMap* map,
+      std::vector<std::pair<double, double>>* intrinsics_bounds = nullptr,
+      aslam::NCamera::Ptr base_cam = nullptr);
 
  private:
   const visualization::ViwlsGraphRvizPlotter* plotter_;

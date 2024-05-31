@@ -94,6 +94,9 @@ DEFINE_bool(
     "visual error terms). Pose graph relaxation on the other hand adds visual "
     "loop closures as edges by default.");
 
+DEFINE_double(
+    appd_weight, 0.0, "APPD weight between two consecutive timestamps.");
+
 namespace map_optimization {
 ViProblemOptions ViProblemOptions::initFromGFlags() {
   ViProblemOptions options;
@@ -151,9 +154,58 @@ ViProblemOptions ViProblemOptions::initFromGFlags() {
   return options;
 }
 
+struct DistanceCostFunctor {
+  DistanceCostFunctor(double a, double b, double c, double d)
+      : a_{a}, b_{b}, c_{c}, d_{d} {}
+
+  template <typename T>
+  bool operator()(const T* const p1, const T* const p2, T* residual) const {
+    residual[0] = a_ * (p1[0] - p2[0]);
+    residual[1] = b_ * (p1[1] - p2[1]);
+    residual[2] = c_ * (p1[2] - p2[2]);
+    residual[3] = d_ * (p1[3] - p2[3]);
+    return true;
+  }
+
+ private:
+  const double a_, b_, c_, d_;
+};
+
+struct PinholeAPPDCostFunctor {
+  PinholeAPPDCostFunctor(double weight, int width, int height)
+      : weight_{weight}, width_{width}, height_{height} {}
+
+  template <typename T>
+  bool operator()(const T* const p, const T* const p_hat, T* residual) const {
+    T fx = p_hat[0] / p[0];
+    T fy = p_hat[1] / p[1];
+
+    residual[0] = weight_ * (fx * p[2] - p_hat[2]) / 4.0;
+    residual[1] = weight_ * (fy * p[3] - p_hat[3]) / 4.0;
+
+    residual[2] = weight_ * ((1.0 - fx) * width_ + fx * p[2] - p_hat[2]) / 4.0;
+    residual[3] = weight_ * ((1.0 - fy) * height_ + fy * p[3] - p_hat[3]) / 4.0;
+
+    residual[4] = weight_ * (fx * p[2] - p_hat[2]) / 4.0;
+    residual[5] = weight_ * ((1.0 - fy) * height_ + fy * p[3] - p_hat[3]) / 4.0;
+
+    residual[6] = weight_ * ((1.0 - fx) * width_ + fx * p[2] - p_hat[2]) / 4.0;
+    residual[7] = weight_ * (fy * p[3] - p_hat[3]) / 4.0;
+
+    return true;
+  }
+
+ private:
+  const double weight_;
+  const double width_;
+  const double height_;
+};
+
 OptimizationProblem* constructOptimizationProblem(
     const vi_map::MissionIdSet& mission_ids, const ViProblemOptions& options,
-    vi_map::VIMap* map) {
+    vi_map::VIMap* map,
+    std::vector<std::pair<double, double>>* intrinsics_bounds,
+    aslam::NCamera::Ptr base_cam) {
   CHECK(map);
   CHECK(options.isValid());
 
@@ -164,11 +216,96 @@ OptimizationProblem* constructOptimizationProblem(
         options.feature_type, options.fix_landmark_positions,
         options.fix_intrinsics, options.fix_extrinsics_rotation,
         options.fix_extrinsics_translation, options.min_landmarks_per_frame,
-        problem);
+        problem, intrinsics_bounds, base_cam);
+    if (intrinsics_bounds != nullptr) {
+      LOG(INFO) << "Added intrinsics bounds.";
+    }
     if (num_visual_constraints_added == 0u) {
       LOG(WARNING)
           << "WARNING: Visual constraints enabled, but none "
           << "were found, adapting DoF settings of optimization problem...";
+    }
+
+    ceres_error_terms::ProblemInformation* problem_information =
+        CHECK_NOTNULL(problem->getProblemInformationMutable());
+
+    std::shared_ptr<ceres::LossFunction> loss_function(nullptr);
+
+    vi_map::SensorManager& sensor_manager = map->getSensorManager();
+
+    // Add neighbor distance
+    for (const vi_map::MissionId& mission_id : mission_ids) {
+      vi_map::VIMission& mission = map->getMission(mission_id);
+      std::vector<aslam::SensorId> ncamera_ids;
+      ncamera_ids.push_back(map->getMissionNCamera(mission_id).getId());
+      for (const aslam::SensorId& id : mission.getSegmentNCameraIds()) {
+        ncamera_ids.push_back(id);
+      }
+
+      /*double s = FLAGS_intrinsics_bounds_appd;
+        intrinsics_bounds.push_back(std::make_pair(-3.0 * s, 3.0 * s));
+        intrinsics_bounds.push_back(std::make_pair(-4.0 * s, 4.0 * s));
+        intrinsics_bounds.push_back(std::make_pair(-1.0 * s, 1.0 * s));
+        intrinsics_bounds.push_back(std::make_pair(-1.0 * s, 1.0 * s));
+        intrinsics_bounds.push_back(std::make_pair(-0.02 * s, 0.02 * s));
+        intrinsics_bounds.push_back(std::make_pair(-0.05 * s, 0.05 * s));
+        intrinsics_bounds.push_back(std::make_pair(-0.1 * s, 0.1 * s));
+        intrinsics_bounds.push_back(std::make_pair(-0.2 * s, 0.2 * s));*/
+
+      double s = FLAGS_appd_weight;
+
+      if (s != 0) {
+        LOG(INFO) << "Using APPD weight " << s;
+        for (size_t idx = 1; idx < ncamera_ids.size(); idx++) {
+          aslam::NCamera::Ptr before =
+              sensor_manager.getSensorPtr<aslam::NCamera>(
+                  ncamera_ids.at(idx - 1));
+          aslam::NCamera::Ptr after =
+              sensor_manager.getSensorPtr<aslam::NCamera>(ncamera_ids.at(idx));
+
+          for (size_t idx2 = 0; idx2 < before->getNumCameras(); idx2++) {
+            aslam::Camera& cam_before = before->getCameraMutable(idx2);
+            aslam::Camera& cam_after = after->getCameraMutable(idx2);
+
+            // make distortion constant
+            problem_information->setParameterBlockConstantIfPartOfTheProblem(
+                cam_before.getDistortionMutable()->getParametersMutable());
+            problem_information->setParameterBlockConstantIfPartOfTheProblem(
+                cam_after.getDistortionMutable()->getParametersMutable());
+
+            // appd on pinhole
+            std::shared_ptr<ceres::CostFunction> cost_function(
+                new ceres::AutoDiffCostFunction<
+                    PinholeAPPDCostFunctor, 8, 4, 4>(new PinholeAPPDCostFunctor(
+                    s, cam_before.imageWidth(), cam_before.imageHeight())));
+            problem_information->addResidualBlock(
+                ceres_error_terms::ResidualType::kGenericPrior, cost_function,
+                loss_function,
+                {cam_before.getParametersMutable(),
+                 cam_after.getParametersMutable()});
+
+            /*std::shared_ptr<ceres::CostFunction> cost_function(
+                new ceres::AutoDiffCostFunction<DistanceCostFunctor, 4, 4, 4>(
+                    new DistanceCostFunctor(
+                        s / 3.0, s / 4.0, s / 1.0, s / 1.0)));
+            problem_information->addResidualBlock(
+                ceres_error_terms::ResidualType::kGenericPrior, cost_function,
+                loss_function,
+                {cam_before.getParametersMutable(),
+                 cam_after.getParametersMutable()});
+            std::shared_ptr<ceres::CostFunction> cost_function2(
+                new ceres::AutoDiffCostFunction<DistanceCostFunctor, 4, 4, 4>(
+                    new DistanceCostFunctor(
+                        s / 0.02, s / 0.05, s / 0.1, s / 0.2)));
+            problem_information->addResidualBlock(
+                ceres_error_terms::ResidualType::kGenericPrior, cost_function2,
+                loss_function,
+                {cam_before.getDistortionMutable()->getParametersMutable(),
+                 cam_after.getDistortionMutable()->getParametersMutable()});
+            */
+          }
+        }
+      }
     }
   }
   size_t num_inertial_constraints_added = 0u;

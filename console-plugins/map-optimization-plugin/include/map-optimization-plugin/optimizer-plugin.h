@@ -50,6 +50,7 @@ class OptimizerPlugin : public common::ConsolePluginBaseWithPlotter {
       const pose::Transformation& T_S_T);
 
   int createCameraSegments();
+  int dumpCameraSegments();
 };
 }  // namespace map_optimization_plugin
 #endif  // MAP_OPTIMIZATION_PLUGIN_OPTIMIZER_PLUGIN_H_

@@ -27,14 +27,20 @@ VIMapOptimizer::VIMapOptimizer(
 
 bool VIMapOptimizer::optimize(
     const map_optimization::ViProblemOptions& options,
-    const vi_map::MissionIdSet& missions_to_optimize, vi_map::VIMap* map) {
-  return optimize(options, missions_to_optimize, map, nullptr /*result*/);
+    const vi_map::MissionIdSet& missions_to_optimize, vi_map::VIMap* map,
+    std::vector<std::pair<double, double>>* intrinsics_bounds,
+    aslam::NCamera::Ptr base_cam) {
+  return optimize(
+      options, missions_to_optimize, map, nullptr /*result*/, intrinsics_bounds,
+      base_cam);
 }
 
 bool VIMapOptimizer::optimize(
     const map_optimization::ViProblemOptions& options,
     const vi_map::MissionIdSet& missions_to_optimize, vi_map::VIMap* map,
-    OptimizationProblemResult* result) {
+    OptimizationProblemResult* result,
+    std::vector<std::pair<double, double>>* intrinsics_bounds,
+    aslam::NCamera::Ptr base_cam) {
   // 'result' can be a nullptr.
   CHECK_NOTNULL(map);
 
@@ -45,7 +51,7 @@ bool VIMapOptimizer::optimize(
 
   map_optimization::OptimizationProblem::UniquePtr optimization_problem(
       map_optimization::constructOptimizationProblem(
-          missions_to_optimize, options, map));
+          missions_to_optimize, options, map, intrinsics_bounds, base_cam));
   CHECK(optimization_problem);
 
   std::vector<std::shared_ptr<ceres::IterationCallback>> callbacks;

@@ -107,7 +107,7 @@ struct ProblemInformation {
     bound_info.lower_bound = lower_bound;
     bound_info.upper_bound = upper_bound;
 
-    parameter_bounds.emplace(parameter_block, bound_info);
+    parameter_bounds.push_back(std::make_pair(parameter_block, bound_info));
   }
 
   void deactivateCostFunction(ceres::CostFunction* cost_function) {
@@ -129,12 +129,12 @@ struct ProblemInformation {
   std::unordered_set<double*> active_parameter_blocks;
   std::unordered_set<double*> constant_parameter_blocks;
 
-  typedef std::unordered_map<double*, ParameterBoundInformation>
+  typedef std::vector<std::pair<double*, ParameterBoundInformation>>
       ParameterBoundMap;
   ParameterBoundMap parameter_bounds;
 
-  typedef std::unordered_map<double*,
-                             std::shared_ptr<ceres::LocalParameterization> >
+  typedef std::unordered_map<
+      double*, std::shared_ptr<ceres::LocalParameterization>>
       ParameterizationsMap;
   ParameterizationsMap parameterizations;
 };

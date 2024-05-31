@@ -1,5 +1,7 @@
 #include "map-optimization/optimization-state-buffer.h"
 
+#include <iomanip>
+#include <sstream>
 #include <unordered_set>
 #include <vector>
 
@@ -10,6 +12,18 @@
 #include <vi-map/sensor-manager.h>
 
 namespace map_optimization {
+
+static std::ifstream my_log;
+
+static void printCamera(const aslam::NCamera* ncamera) {
+  for (size_t i = 0; i < ncamera->getNumCameras(); i++) {
+    const aslam::Camera& camera = ncamera->getCamera(i);
+    std::cout << std::endl << "cam" << i << ":";
+    std::cout << std::endl;
+    camera.printParameters(std::cout, "");
+    std::cout << std::endl;
+  }
+}
 
 double* OptimizationStateBuffer::get_vertex_q_IM__M_p_MI_JPL(
     const pose_graph::VertexId& id) {
@@ -106,6 +120,10 @@ void OptimizationStateBuffer::copyAllCameraCalibrationsBackToMap(
       aslam::NCamera::Ptr ncamera =
           sensor_manager.getSensorPtr<aslam::NCamera>(ncamid);
       CHECK(ncamera);
+
+      //LOG(INFO) << "copy_back " << ncamera->getId().shortHex();
+      //printCamera(ncamera.get());
+
       const size_t index =
           common::getChecked(camera_id_to_camera_idx_, camid_ncamids.first);
 
@@ -240,6 +258,11 @@ void OptimizationStateBuffer::importCameraCalibrationsOfMissions(
         ncameras.emplace_back(&segment_ncamera);
       }
     }
+  }
+
+  for (const aslam::NCamera* ncamera : ncameras) {
+    //LOG(INFO) << "import " << ncamera->getId();
+    // printCamera(ncamera);
   }
   camera_q_CI__C_p_CI_.resize(Eigen::NoChange, num_cameras);
 

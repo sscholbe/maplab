@@ -13,6 +13,9 @@
 #include <vi-map/vi-map.h>
 #include <visualization/viwls-graph-plotter.h>
 
+#include <fstream>
+#include <iomanip>
+
 DECLARE_string(map_mission);
 DECLARE_string(map_mission_list);
 DEFINE_string(
@@ -22,6 +25,11 @@ DEFINE_string(
 DEFINE_double(
     camera_segment_duration, 60.0,
     "Duration of the camera segments in seconds.");
+DEFINE_string(
+    dump_segment_file, "",
+    "File where to store the camera parameters for all segments.");
+DEFINE_double(intrinsics_bounds_appd, 0.0, "APPD bounds per parameter");
+DEFINE_bool(global_distortion, false, "set global distortion");
 
 namespace map_optimization_plugin {
 OptimizerPlugin::OptimizerPlugin(
@@ -103,6 +111,11 @@ OptimizerPlugin::OptimizerPlugin(
       [this]() -> int { return createCameraSegments(); },
       "This command creates new cameras after --camera_segment_duration "
       "seconds",
+      common::Processing::Sync);
+  addCommand(
+      {"dump_camera_segments"},
+      [this]() -> int { return dumpCameraSegments(); },
+      "Dumps the camera parameters of all segments into --dump_segment_file.",
       common::Processing::Sync);
 }
 
@@ -233,9 +246,49 @@ int OptimizerPlugin::optimize(
   vi_map::MissionIdSet missions_to_optimize(
       missions_to_optimize_list.begin(), missions_to_optimize_list.end());
 
+  std::vector<std::pair<double, double>> intrinsics_bounds;
+
   map_optimization::VIMapOptimizer optimizer(
       getPlotterUnsafe(), kSignalHandlerEnabled);
-  bool success = optimizer.optimize(options, missions_to_optimize, map.get());
+
+  /* ranges = {
+    "fx": 3,
+    "fy": 4,
+    "cx": 1,
+    "cy": 1,
+    "k1": 0.02,
+    "k2": 0.05,
+    "k3": 0.1,
+    "k4": 0.2
+} */
+  double s = FLAGS_intrinsics_bounds_appd;
+  intrinsics_bounds.push_back(std::make_pair(-3.0 * s, 3.0 * s));
+  intrinsics_bounds.push_back(std::make_pair(-4.0 * s, 4.0 * s));
+  intrinsics_bounds.push_back(std::make_pair(-1.0 * s, 1.0 * s));
+  intrinsics_bounds.push_back(std::make_pair(-1.0 * s, 1.0 * s));
+  intrinsics_bounds.push_back(std::make_pair(-0.02 * s, 0.02 * s));
+  intrinsics_bounds.push_back(std::make_pair(-0.05 * s, 0.05 * s));
+  intrinsics_bounds.push_back(std::make_pair(-0.1 * s, 0.1 * s));
+  intrinsics_bounds.push_back(std::make_pair(-0.2 * s, 0.2 * s));
+
+  if (FLAGS_intrinsics_bounds_appd != 0) {
+    LOG(INFO) << "Using APPD intrinsics bound.";
+  }
+
+  vi_map::VIMission& mission = map->getMission(missions_to_optimize_list.at(0));
+  vi_map::SensorManager& sensor_manager = map->getSensorManager();
+  aslam::NCamera::Ptr base_cam = nullptr;
+
+  if (FLAGS_global_distortion) {
+    LOG(INFO) << "Using global distortion";
+    base_cam =
+        sensor_manager.getSensorPtr<aslam::NCamera>(mission.getNCameraId());
+  }
+
+  bool success = optimizer.optimize(
+      options, missions_to_optimize, map.get(), nullptr,
+      FLAGS_intrinsics_bounds_appd != 0 ? &intrinsics_bounds : nullptr,
+      base_cam);
 
   if (!success) {
     return common::kUnknownError;
@@ -290,10 +343,10 @@ int OptimizerPlugin::createCameraSegments() {
   if (!getSelectedMapKeyIfSet(&selected_map_key)) {
     return common::kStupidUserError;
   }
-  if (FLAGS_camera_segment_duration < 1) {
+  /*if (FLAGS_camera_segment_duration < 0.01) {
     LOG(ERROR) << "The segment duration is too short.";
     return common::kStupidUserError;
-  }
+  }*/
 
   vi_map::VIMapManager map_manager;
   vi_map::VIMapManager::MapWriteAccess map =
@@ -335,60 +388,162 @@ int OptimizerPlugin::createCameraSegments() {
     pose_graph::VertexIdList vertex_ids;
     map->getAllVertexIdsInMissionAlongGraph(mission_id, &vertex_ids);
 
-    // Represents the timestamps for a segment in nanoseconds, excluding the end
-    typedef std::pair<size_t, size_t> Segment;
+    if (FLAGS_camera_segment_duration != -1) {
+      // Represents the timestamps for a segment in nanoseconds, excluding the
+      // end
+      typedef std::pair<size_t, size_t> Segment;
 
-    // Compute the segments based on the desired duration
-    std::vector<Segment> segments;
-    size_t segment_duration_ns =
-        aslam::time::secondsToNanoSeconds(FLAGS_camera_segment_duration);
-    size_t start_time_ns =
-        map->getVertex(vertex_ids.front()).getMinTimestampNanoseconds();
-    size_t end_time_ns =
-        map->getVertex(vertex_ids.back()).getMinTimestampNanoseconds();
-    for (size_t time_ns = start_time_ns; time_ns <= end_time_ns;
-         time_ns += segment_duration_ns) {
-      segments.push_back(
-          std::make_pair(time_ns, time_ns + segment_duration_ns));
+      // Compute the segments based on the desired duration
+      std::vector<Segment> segments;
+      size_t segment_duration_ns =
+          aslam::time::secondsToNanoSeconds(FLAGS_camera_segment_duration);
+      size_t start_time_ns =
+          map->getVertex(vertex_ids.front()).getMinTimestampNanoseconds();
+      size_t end_time_ns =
+          map->getVertex(vertex_ids.back()).getMinTimestampNanoseconds();
+      for (size_t time_ns = start_time_ns; time_ns <= end_time_ns;
+           time_ns += segment_duration_ns) {
+        segments.push_back(
+            std::make_pair(time_ns, time_ns + segment_duration_ns));
+      }
+
+      std::vector<aslam::NCamera::Ptr> cameras;
+
+      // The first segment will use the reference camera
+      cameras.push_back(reference_camera);
+
+      // The other segments will have their copy of the reference camera
+      for (size_t i = 1; i < segments.size(); i++) {
+        aslam::NCamera::UniquePtr clone_ptr(
+            reference_camera->cloneWithNewIds());
+        aslam::SensorId clone_id = clone_ptr->getId();
+        if (sensor_manager.isBaseSensor(reference_camera->getId())) {
+          // TODO(sscholbe): Can a camera be a base sensor?
+          sensor_manager.addSensorAsBase<aslam::NCamera>(std::move(clone_ptr));
+        } else {
+          sensor_manager.addSensor<aslam::NCamera>(
+              std::move(clone_ptr),
+              sensor_manager.getBaseSensorId(reference_camera->getId()),
+              sensor_manager.getSensor_T_B_S(reference_camera->getId()));
+        }
+        cameras.push_back(
+            sensor_manager.getSensorPtr<aslam::NCamera>(clone_id));
+        mission.addSegmentNCameraId(clone_id);
+      }
+
+      // Traverse the vertices and assign them to the corresponding segment
+      // camera
+      std::vector<Segment>::iterator current_segment = segments.begin();
+      std::vector<aslam::NCamera::Ptr>::iterator current_camera =
+          cameras.begin();
+      for (const pose_graph::VertexId& vertex_id : vertex_ids) {
+        vi_map::Vertex& vertex = map->getVertex(vertex_id);
+        size_t time_ns = vertex.getMinTimestampNanoseconds();
+        while (time_ns >= current_segment->second) {
+          current_segment++;
+          current_camera++;
+        }
+        vertex.setNCameras(*current_camera);
+      }
+
+      LOG(INFO) << "Created " << segments.size() << " segments for mission "
+                << mission_id.shortHex();
+    } else {
+      // Traverse the vertices and assign them to the corresponding segment
+      // camera
+      bool first = true;
+      for (const pose_graph::VertexId& vertex_id : vertex_ids) {
+        if (first) {
+          first = false;
+          continue;
+        }
+        vi_map::Vertex& vertex = map->getVertex(vertex_id);
+
+        aslam::NCamera::UniquePtr clone_ptr(
+            reference_camera->cloneWithNewIds());
+        aslam::SensorId clone_id = clone_ptr->getId();
+        if (sensor_manager.isBaseSensor(reference_camera->getId())) {
+          // TODO(sscholbe): Can a camera be a base sensor?
+          sensor_manager.addSensorAsBase<aslam::NCamera>(std::move(clone_ptr));
+        } else {
+          sensor_manager.addSensor<aslam::NCamera>(
+              std::move(clone_ptr),
+              sensor_manager.getBaseSensorId(reference_camera->getId()),
+              sensor_manager.getSensor_T_B_S(reference_camera->getId()));
+        }
+        mission.addSegmentNCameraId(clone_id);
+
+        vertex.setNCameras(
+            sensor_manager.getSensorPtr<aslam::NCamera>(clone_id));
+      }
+      LOG(INFO) << "Created cameras for each vertex";
+    }
+  }
+
+  return common::kSuccess;
+}
+
+int OptimizerPlugin::dumpCameraSegments() {
+  std::string selected_map_key;
+  if (!getSelectedMapKeyIfSet(&selected_map_key)) {
+    return common::kStupidUserError;
+  }
+  if (FLAGS_dump_segment_file.empty()) {
+    LOG(ERROR) << "Path not specified.";
+    return common::kStupidUserError;
+  }
+
+  std::ofstream of(FLAGS_dump_segment_file);
+  of << "# mission_id ncamera_id camera_idx width height intrinsics* "
+        "distortion*"
+     << std::endl;
+
+  vi_map::VIMapManager map_manager;
+  vi_map::VIMapManager::MapWriteAccess map =
+      map_manager.getMapWriteAccess(selected_map_key);
+
+  vi_map::SensorManager& sensor_manager = map->getSensorManager();
+
+  vi_map::MissionIdList mission_id_list;
+  map->getAllMissionIds(&mission_id_list);
+
+  for (const vi_map::MissionId& mission_id : mission_id_list) {
+    vi_map::VIMission& mission = map->getMission(mission_id);
+    if (!mission.hasNCamera()) {
+      LOG(INFO) << "Mission " << mission_id.shortHex()
+                << " contains no camera. Skipping.";
+      continue;
     }
 
     std::vector<aslam::NCamera::Ptr> cameras;
-
-    // The first segment will use the reference camera
+    const aslam::NCamera::Ptr reference_camera =
+        map->getMissionNCameraPtr(mission_id);
     cameras.push_back(reference_camera);
-
-    // The other segments will have their copy of the reference camera
-    for (size_t i = 1; i < segments.size(); i++) {
-      aslam::NCamera::UniquePtr clone_ptr(reference_camera->cloneWithNewIds());
-      aslam::SensorId clone_id = clone_ptr->getId();
-      if (sensor_manager.isBaseSensor(reference_camera->getId())) {
-        // TODO(sscholbe): Can a camera be a base sensor?
-        sensor_manager.addSensorAsBase<aslam::NCamera>(std::move(clone_ptr));
-      } else {
-        sensor_manager.addSensor<aslam::NCamera>(
-            std::move(clone_ptr),
-            sensor_manager.getBaseSensorId(reference_camera->getId()),
-            sensor_manager.getSensor_T_B_S(reference_camera->getId()));
-      }
-      cameras.push_back(sensor_manager.getSensorPtr<aslam::NCamera>(clone_id));
-      mission.addSegmentNCameraId(clone_id);
+    for (const aslam::SensorId& ncamera_id : mission.getSegmentNCameraIds()) {
+      cameras.push_back(
+          sensor_manager.getSensorPtr<aslam::NCamera>(ncamera_id));
     }
 
-    // Traverse the vertices and assign them to the corresponding segment camera
-    std::vector<Segment>::iterator current_segment = segments.begin();
-    std::vector<aslam::NCamera::Ptr>::iterator current_camera = cameras.begin();
-    for (const pose_graph::VertexId& vertex_id : vertex_ids) {
-      vi_map::Vertex& vertex = map->getVertex(vertex_id);
-      size_t time_ns = vertex.getMinTimestampNanoseconds();
-      while (time_ns >= current_segment->second) {
-        current_segment++;
-        current_camera++;
+    for (const aslam::NCamera::Ptr& ncam : cameras) {
+      for (size_t idx = 0; idx < ncam->getNumCameras(); idx++) {
+        const aslam::Camera& cam = ncam->getCamera(idx);
+        of << std::fixed << std::setprecision(0);
+        of << mission_id.shortHex() << " " << ncam->getId().shortHex() << " "
+           << idx << std::setprecision(8);
+        // intrinsics
+        of << " " << cam.imageWidth() << " " << cam.imageHeight();
+        const Eigen::VectorXd& intrinsics = cam.getParameters();
+        for (size_t i = 0; i < intrinsics.size(); i++) {
+          of << " " << intrinsics(i);
+        }
+        // distortion
+        const Eigen::VectorXd& dist = cam.getDistortion().getParameters();
+        for (size_t i = 0; i < dist.size(); i++) {
+          of << " " << dist(i);
+        }
+        of << std::endl;
       }
-      vertex.setNCameras(*current_camera);
     }
-
-    LOG(INFO) << "Created " << segments.size() << " segments for mission "
-              << mission_id.shortHex();
   }
 
   return common::kSuccess;

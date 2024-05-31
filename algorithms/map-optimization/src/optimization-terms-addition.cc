@@ -29,7 +29,9 @@ void addLandmarkTermForKeypoint(
         baseframe_parameterization,
     const std::shared_ptr<ceres::LocalParameterization>&
         camera_parameterization,
-    vi_map::Vertex* vertex_ptr, OptimizationProblem* problem) {
+    vi_map::Vertex* vertex_ptr, OptimizationProblem* problem,
+    std::vector<std::pair<double, double>>* intrinsics_bounds,
+    aslam::NCamera::Ptr base_cam) {
   CHECK_NOTNULL(vertex_ptr);
   CHECK_NOTNULL(problem);
 
@@ -100,13 +102,14 @@ void addLandmarkTermForKeypoint(
   double* camera_C_p_CI = camera_q_CI + 4;
 
   // List of cost term arguments shared between all landmark types.
-  std::vector<double*> cost_term_args = {landmark.get_p_B_Mutable(),
-                                         landmark_store_vertex_q_IM__M_p_MI,
-                                         landmark_store_baseframe_q_GM__G_p_GM,
-                                         observer_baseframe_q_GM__G_p_GM,
-                                         vertex_q_IM__M_p_MI,
-                                         camera_q_CI,
-                                         camera_C_p_CI};
+  std::vector<double*> cost_term_args = {
+      landmark.get_p_B_Mutable(),
+      landmark_store_vertex_q_IM__M_p_MI,
+      landmark_store_baseframe_q_GM__G_p_GM,
+      observer_baseframe_q_GM__G_p_GM,
+      vertex_q_IM__M_p_MI,
+      camera_q_CI,
+      camera_C_p_CI};
 
   const double observation_uncertainty =
       visual_frame.getKeypointMeasurementUncertainty(keypoint_idx);
@@ -129,7 +132,13 @@ void addLandmarkTermForKeypoint(
       distortion_params =
           camera_ptr->getDistortionMutable()->getParametersMutable();
       CHECK_NOTNULL(distortion_params);
-      cost_term_args.emplace_back(distortion_params);
+      if (base_cam != nullptr) {
+        cost_term_args.emplace_back(base_cam->getCameraMutable(frame_idx)
+                                        .getDistortionMutable()
+                                        ->getParametersMutable());
+      } else {
+        cost_term_args.emplace_back(distortion_params);
+      }
     }
 
     landmark_term_cost = std::shared_ptr<ceres::CostFunction>(
@@ -223,7 +232,25 @@ void addLandmarkTermForKeypoint(
   if (is_visual_landmark && fix_intrinsics) {
     problem_information->setParameterBlockConstant(intrinsics_params);
     if (distortion_params != nullptr) {
-      problem_information->setParameterBlockConstant(distortion_params);
+      problem_information->setParameterBlockConstantIfPartOfTheProblem(
+          distortion_params);
+    }
+  }
+  if (is_visual_landmark && intrinsics_bounds != nullptr) {
+    // LOG(INFO) << "Setting intrinsics bounds.";
+    for (int i = 0; i < 4; i++) {
+      problem_information->setParameterBlockBounds(
+          i, intrinsics_params[i] + intrinsics_bounds->at(i).first,
+          intrinsics_params[i] + intrinsics_bounds->at(i).second,
+          intrinsics_params);
+    }
+    if (distortion_params != nullptr) {
+      for (int i = 0; i < 4; i++) {
+        problem_information->setParameterBlockBounds(
+            i, distortion_params[i] + intrinsics_bounds->at(i + 4).first,
+            distortion_params[i] + intrinsics_bounds->at(i + 4).second,
+            distortion_params);
+      }
     }
   }
   if (fix_extrinsics_rotation) {
@@ -250,7 +277,9 @@ int addLandmarkTermsForVertices(
         baseframe_parameterization,
     const std::shared_ptr<ceres::LocalParameterization>&
         camera_parameterization,
-    const pose_graph::VertexIdList& vertices, OptimizationProblem* problem) {
+    const pose_graph::VertexIdList& vertices, OptimizationProblem* problem,
+    std::vector<std::pair<double, double>>* intrinsics_bounds,
+    aslam::NCamera::Ptr base_cam) {
   CHECK_NOTNULL(problem);
 
   vi_map::VIMap* map = CHECK_NOTNULL(problem->getMapMutable());
@@ -322,7 +351,8 @@ int addLandmarkTermsForVertices(
             feature_type, keypoint_idx, frame_idx, fix_landmark_positions,
             fix_intrinsics, fix_extrinsics_rotation, fix_extrinsics_translation,
             pose_parameterization, baseframe_parameterization,
-            camera_parameterization, &vertex, problem);
+            camera_parameterization, &vertex, problem, intrinsics_bounds,
+            base_cam);
         num_visual_constraints++;
       }
     }
@@ -334,7 +364,9 @@ int addLandmarkTerms(
     const vi_map::FeatureType use_feature_type,
     const bool fix_landmark_positions, const bool fix_intrinsics,
     const bool fix_extrinsics_rotation, const bool fix_extrinsics_translation,
-    const size_t min_landmarks_per_frame, OptimizationProblem* problem) {
+    const size_t min_landmarks_per_frame, OptimizationProblem* problem,
+    std::vector<std::pair<double, double>>* intrinsics_bounds,
+    aslam::NCamera::Ptr base_cam) {
   CHECK_NOTNULL(problem);
 
   vi_map::VIMap* map = CHECK_NOTNULL(problem->getMapMutable());
@@ -352,8 +384,10 @@ int addLandmarkTerms(
         fix_extrinsics_rotation, fix_extrinsics_translation,
         min_landmarks_per_frame, parameterizations.pose_parameterization,
         parameterizations.baseframe_parameterization,
-        parameterizations.quaternion_parameterization, vertices, problem);
+        parameterizations.quaternion_parameterization, vertices, problem,
+        intrinsics_bounds, base_cam);
   }
+
   VLOG(1) << "Added " << num_visual_constraints << " visual residuals.";
   return num_visual_constraints;
 }

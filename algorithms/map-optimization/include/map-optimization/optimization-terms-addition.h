@@ -4,6 +4,7 @@
 #include "map-optimization/optimization-problem.h"
 
 #include <memory>
+#include <vector>
 
 namespace map_optimization {
 
@@ -11,7 +12,9 @@ int addLandmarkTerms(
     const vi_map::FeatureType use_feature_type,
     const bool fix_landmark_positions, const bool fix_intrinsics,
     const bool fix_extrinsics_rotation, const bool fix_extrinsics_translation,
-    const size_t min_landmarks_per_frame, OptimizationProblem* problem);
+    const size_t min_landmarks_per_frame, OptimizationProblem* problem,
+    std::vector<std::pair<double, double>>* intrinsics_bounds = nullptr,
+    aslam::NCamera::Ptr base_cam = nullptr);
 
 int addLandmarkTermsForVertices(
     const vi_map::FeatureType use_feature_type,
@@ -23,7 +26,9 @@ int addLandmarkTermsForVertices(
         baseframe_parameterization,
     const std::shared_ptr<ceres::LocalParameterization>&
         camera_parameterization,
-    const pose_graph::VertexIdList& vertices, OptimizationProblem* problem);
+    const pose_graph::VertexIdList& vertices, OptimizationProblem* problem,
+    std::vector<std::pair<double, double>>* intrinsics_bounds = nullptr,
+    aslam::NCamera::Ptr base_cam = nullptr);
 
 void addLandmarkTermForKeypoint(
     const vi_map::FeatureType feature_type, const int keypoint_idx,
@@ -35,7 +40,9 @@ void addLandmarkTermForKeypoint(
         baseframe_parameterization,
     const std::shared_ptr<ceres::LocalParameterization>&
         camera_parameterization,
-    vi_map::Vertex* vertex_ptr, OptimizationProblem* problem);
+    vi_map::Vertex* vertex_ptr, OptimizationProblem* problem,
+    std::vector<std::pair<double, double>>* intrinsics_bounds = nullptr,
+    aslam::NCamera::Ptr base_cam = nullptr);
 
 int addInertialTerms(
     const bool fix_gyro_bias, const bool fix_accel_bias,
