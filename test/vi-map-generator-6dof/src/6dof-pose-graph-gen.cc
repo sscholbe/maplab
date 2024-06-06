@@ -622,7 +622,6 @@ void SixDofPoseGraphGenerator::solve(int max_num_of_iters) {
   options.function_tolerance = 1e-20;
   options.parameter_tolerance = 1e-20;
   options.num_threads = 8;
-  options.num_linear_solver_threads = 8;
   options.max_num_iterations = max_num_of_iters;
   ceres::Solve(options, &problem_, &summary_);
 

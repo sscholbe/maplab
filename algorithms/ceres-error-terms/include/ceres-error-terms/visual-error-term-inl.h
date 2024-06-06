@@ -9,8 +9,8 @@
 
 namespace ceres_error_terms {
 
-template <typename CameraType, typename DistortionType>
-bool VisualReprojectionError<CameraType, DistortionType>::Evaluate(
+template <typename CameraType, typename DistortionType, bool UseDrift>
+bool VisualReprojectionError<CameraType, DistortionType, UseDrift>::Evaluate(
     double const* const* parameters, double* residuals,
     double** jacobians) const {
   // Coordinate frames:
@@ -42,11 +42,22 @@ bool VisualReprojectionError<CameraType, DistortionType>::Evaluate(
   Eigen::Map<const Eigen::Matrix<double, CameraType::parameterCount(), 1> >
       intrinsics_map(parameters[kIdxCameraIntrinsics]);
   Eigen::Matrix<double, Eigen::Dynamic, 1> distortion_map;
+  Eigen::Matrix<double, Eigen::Dynamic, 1> intrinsics_base_map;
+  Eigen::Matrix<double, Eigen::Dynamic, 1> distortion_base_map;
 
   if (DistortionType::parameterCount() > 0) {
     distortion_map = Eigen::Map<
         const Eigen::Matrix<double, DistortionType::parameterCount(), 1> >(
         parameters[kIdxCameraDistortion]);
+  }
+
+  if (UseDrift) {
+    intrinsics_base_map = Eigen::Map<
+        const Eigen::Matrix<double, CameraType::parameterCount(), 1> >(
+        parameters[kIdxCameraIntrinsicsBase]);
+    distortion_base_map = Eigen::Map<
+        const Eigen::Matrix<double, DistortionType::parameterCount(), 1> >(
+        parameters[kIdxCameraDistortionBase]);
   }
 
   // Jacobian of landmark pose in camera system w.r.t. keyframe pose
@@ -130,6 +141,11 @@ bool VisualReprojectionError<CameraType, DistortionType>::Evaluate(
   VisualJacobianType J_keypoint_wrt_p_C_fi;
   Eigen::VectorXd intrinsics = intrinsics_map;
   Eigen::VectorXd distortion = distortion_map;
+
+  if (UseDrift) {
+    intrinsics += intrinsics_base_map;
+    distortion += distortion_base_map;
+  }
 
   // Only evaluate the jacobian if requested.
   VisualJacobianType* J_keypoint_wrt_p_C_fi_ptr = nullptr;
@@ -360,6 +376,29 @@ bool VisualReprojectionError<CameraType, DistortionType>::Evaluate(
           jacobians[kIdxCameraDistortion], visual::kResidualSize,
           DistortionType::parameterCount());
       if (!projection_failed) {
+        J = J_keypoint_wrt_distortion * this->pixel_sigma_inverse_;
+      } else {
+        J.setZero();
+      }
+    }
+
+    // Jacobian w.r.t. intrinsics base.
+    if (jacobians[kIdxCameraIntrinsicsBase]) {
+      Eigen::Map<IntrinsicsJacobian> J(jacobians[kIdxCameraIntrinsicsBase]);
+      if (UseDrift && !projection_failed) {
+        J = J_keypoint_wrt_intrinsics * this->pixel_sigma_inverse_;
+      } else {
+        J.setZero();
+      }
+    }
+
+    // Jacobian w.r.t. distortion base.
+    if (DistortionType::parameterCount() > 0 &&
+        jacobians[kIdxCameraDistortionBase]) {
+      Eigen::Map<DistortionJacobian> J(
+          jacobians[kIdxCameraDistortionBase], visual::kResidualSize,
+          DistortionType::parameterCount());
+      if (UseDrift && !projection_failed) {
         J = J_keypoint_wrt_distortion * this->pixel_sigma_inverse_;
       } else {
         J.setZero();

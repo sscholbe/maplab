@@ -19,6 +19,8 @@ DEFINE_string(
     relax_external_loop_closures_file, "",
     "yaml file containing the loop "
     "closures for the pose graph relaxation.");
+DEFINE_string(
+    dump_camera_file, "cams.txt", "File where to store the camera parameters.");
 
 namespace map_optimization_plugin {
 OptimizerPlugin::OptimizerPlugin(
@@ -94,6 +96,13 @@ OptimizerPlugin::OptimizerPlugin(
       "are removed from the map again. Set the path to the yaml file "
       "containing the loop closure constraints with the flag "
       "--external_loop_closures_file",
+      common::Processing::Sync);
+  addCommand(
+      {"create_camera_drift"}, [this]() -> int { return createCameraDrift(); },
+      "Creates the cameras for a drift.", common::Processing::Sync);
+  addCommand(
+      {"dump_cameras"}, [this]() -> int { return dumpCameras(); },
+      "Dumps the camera parameters into --dump_camera_file.",
       common::Processing::Sync);
 }
 
@@ -275,6 +284,153 @@ int OptimizerPlugin::relaxMapMissionsSeparately() {
 
   return common::kSuccess;
 }
+
+int OptimizerPlugin::createCameraDrift() {
+  std::string selected_map_key;
+  if (!getSelectedMapKeyIfSet(&selected_map_key)) {
+    return common::kStupidUserError;
+  }
+
+  vi_map::VIMapManager map_manager;
+  vi_map::VIMapManager::MapWriteAccess map =
+      map_manager.getMapWriteAccess(selected_map_key);
+
+  vi_map::MissionIdList mission_id_list;
+  map.get()->getAllMissionIds(&mission_id_list);
+
+  vi_map::SensorManager& sensor_manager = map->getSensorManager();
+
+  for (const vi_map::MissionId& mission_id : mission_id_list) {
+    if (map->numVerticesInMission(mission_id) < 2) {
+      LOG(INFO) << "Mission " << mission_id.shortHex()
+                << " contains less than two vertices. Skipping.";
+      continue;
+    }
+    vi_map::VIMission& mission = map->getMission(mission_id);
+    if (!mission.hasNCamera()) {
+      LOG(INFO) << "Mission " << mission_id.shortHex()
+                << " contains no camera. Skipping.";
+      continue;
+    }
+
+    const aslam::NCamera::Ptr reference_camera =
+        map->getMissionNCameraPtr(mission_id);
+
+    pose_graph::VertexIdList vertex_ids;
+    map->getAllVertexIdsInMissionAlongGraph(mission_id, &vertex_ids);
+
+    bool first_vertex = true;
+    for (const pose_graph::VertexId& vertex_id : vertex_ids) {
+      if (first_vertex) {
+        first_vertex = false;
+        continue;
+      }
+      vi_map::Vertex& vertex = map->getVertex(vertex_id);
+
+      aslam::NCamera::UniquePtr clone_ptr(reference_camera->cloneWithNewIds());
+      aslam::SensorId clone_id = clone_ptr->getId();
+      if (sensor_manager.isBaseSensor(reference_camera->getId())) {
+        // TODO(sscholbe): Can a camera be a base sensor?
+        sensor_manager.addSensorAsBase<aslam::NCamera>(std::move(clone_ptr));
+      } else {
+        sensor_manager.addSensor<aslam::NCamera>(
+            std::move(clone_ptr),
+            sensor_manager.getBaseSensorId(reference_camera->getId()),
+            sensor_manager.getSensor_T_B_S(reference_camera->getId()));
+      }
+      mission.drift_ncamera_ids.push_back(clone_id);
+
+      // Since the cameras only model a drift, their parameters are a delta
+      // Set intrinsics and distortion parameters initially to 0
+      aslam::NCamera::Ptr ncamera =
+          sensor_manager.getSensorPtr<aslam::NCamera>(clone_id);
+      for (size_t cam_idx = 0u; cam_idx < ncamera->numCameras(); ++cam_idx) {
+        aslam::Camera& cam = ncamera->getCameraMutable(cam_idx);
+        std::fill(
+            cam.getParametersMutable(),
+            cam.getParametersMutable() + cam.getParameterSize(), 0.0);
+        if (cam.getDistortion().getType() !=
+            aslam::Distortion::Type::kNoDistortion) {
+          std::fill(
+              cam.getDistortionMutable()->getParametersMutable(),
+              cam.getDistortionMutable()->getParametersMutable() +
+                  cam.getDistortion().getParameterSize(),
+              0.0);
+        }
+      }
+      vertex.setNCameras(sensor_manager.getSensorPtr<aslam::NCamera>(clone_id));
+    }
+  }
+
+  return common::kSuccess;
+}
+
+int OptimizerPlugin::dumpCameras() {
+  std::string selected_map_key;
+  if (!getSelectedMapKeyIfSet(&selected_map_key)) {
+    return common::kStupidUserError;
+  }
+  if (FLAGS_dump_camera_file.empty()) {
+    LOG(ERROR) << "Path not specified.";
+    return common::kStupidUserError;
+  }
+
+  std::ofstream of(FLAGS_dump_camera_file);
+  of << "# mission_id ncamera_id camera_idx width height intrinsics* "
+        "distortion*"
+     << std::endl;
+
+  vi_map::VIMapManager map_manager;
+  vi_map::VIMapManager::MapWriteAccess map =
+      map_manager.getMapWriteAccess(selected_map_key);
+
+  vi_map::SensorManager& sensor_manager = map->getSensorManager();
+
+  vi_map::MissionIdList mission_id_list;
+  map->getAllMissionIds(&mission_id_list);
+
+  for (const vi_map::MissionId& mission_id : mission_id_list) {
+    vi_map::VIMission& mission = map->getMission(mission_id);
+    if (!mission.hasNCamera()) {
+      LOG(INFO) << "Mission " << mission_id.shortHex()
+                << " contains no camera. Skipping.";
+      continue;
+    }
+
+    std::vector<aslam::NCamera::Ptr> cameras;
+    const aslam::NCamera::Ptr reference_camera =
+        map->getMissionNCameraPtr(mission_id);
+    cameras.push_back(reference_camera);
+    for (const aslam::SensorId& ncamera_id : mission.drift_ncamera_ids) {
+      cameras.push_back(
+          sensor_manager.getSensorPtr<aslam::NCamera>(ncamera_id));
+    }
+
+    for (const aslam::NCamera::Ptr& ncam : cameras) {
+      for (size_t idx = 0; idx < ncam->getNumCameras(); idx++) {
+        const aslam::Camera& cam = ncam->getCamera(idx);
+        of << std::fixed << std::setprecision(0);
+        of << mission_id.shortHex() << " " << ncam->getId().shortHex() << " "
+           << idx << std::setprecision(8);
+        // intrinsics
+        of << " " << cam.imageWidth() << " " << cam.imageHeight();
+        const Eigen::VectorXd& intrinsics = cam.getParameters();
+        for (size_t i = 0; i < intrinsics.size(); i++) {
+          of << " " << intrinsics(i);
+        }
+        // distortion
+        const Eigen::VectorXd& dist = cam.getDistortion().getParameters();
+        for (size_t i = 0; i < dist.size(); i++) {
+          of << " " << dist(i);
+        }
+        of << std::endl;
+      }
+    }
+  }
+
+  return common::kSuccess;
+}
+
 }  // namespace map_optimization_plugin
 
 MAPLAB_CREATE_CONSOLE_PLUGIN_WITH_PLOTTER(

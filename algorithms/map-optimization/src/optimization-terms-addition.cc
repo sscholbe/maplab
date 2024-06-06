@@ -100,13 +100,14 @@ void addLandmarkTermForKeypoint(
   double* camera_C_p_CI = camera_q_CI + 4;
 
   // List of cost term arguments shared between all landmark types.
-  std::vector<double*> cost_term_args = {landmark.get_p_B_Mutable(),
-                                         landmark_store_vertex_q_IM__M_p_MI,
-                                         landmark_store_baseframe_q_GM__G_p_GM,
-                                         observer_baseframe_q_GM__G_p_GM,
-                                         vertex_q_IM__M_p_MI,
-                                         camera_q_CI,
-                                         camera_C_p_CI};
+  std::vector<double*> cost_term_args = {
+      landmark.get_p_B_Mutable(),
+      landmark_store_vertex_q_IM__M_p_MI,
+      landmark_store_baseframe_q_GM__G_p_GM,
+      observer_baseframe_q_GM__G_p_GM,
+      vertex_q_IM__M_p_MI,
+      camera_q_CI,
+      camera_C_p_CI};
 
   const double observation_uncertainty =
       visual_frame.getKeypointMeasurementUncertainty(keypoint_idx);
@@ -132,11 +133,42 @@ void addLandmarkTermForKeypoint(
       cost_term_args.emplace_back(distortion_params);
     }
 
-    landmark_term_cost = std::shared_ptr<ceres::CostFunction>(
-        ceres_error_terms::createVisualCostFunction<
-            ceres_error_terms::VisualReprojectionError>(
-            image_point_distorted, observation_uncertainty, error_term_type,
-            camera_ptr.get()));
+    vi_map::VIMission& mission =
+        problem->getMapMutable()->getMission(vertex_ptr->getMissionId());
+    aslam::Camera& base_cam =
+        problem->getMapMutable()
+            ->getMissionNCameraPtr(vertex_ptr->getMissionId())
+            ->getCameraMutable(frame_idx);
+
+    static double* dummy_intrinsics = new double[24];
+    static double* dummy_distortion = new double[24];
+
+    bool is_base_camera =
+        camera_ptr->getParametersMutable() == base_cam.getParametersMutable();
+
+    if (mission.drift_ncamera_ids.empty() || is_base_camera) {
+      landmark_term_cost = std::shared_ptr<ceres::CostFunction>(
+          ceres_error_terms::createVisualCostFunction<
+              ceres_error_terms::VisualReprojectionError>(
+              image_point_distorted, observation_uncertainty, error_term_type,
+              camera_ptr.get()));
+      cost_term_args.emplace_back(dummy_intrinsics);
+      cost_term_args.emplace_back(dummy_distortion);
+      problem_information->setParameterBlockConstant(dummy_intrinsics);
+      problem_information->setParameterBlockConstant(dummy_distortion);
+    } else {
+      // TODO(sscholbe): bug if no distortion
+      landmark_term_cost = std::shared_ptr<ceres::CostFunction>(
+          ceres_error_terms::createVisualCostFunction<
+              ceres_error_terms::VisualReprojectionError, true>(
+              image_point_distorted, observation_uncertainty, error_term_type,
+              camera_ptr.get()));
+      cost_term_args.emplace_back(base_cam.getParametersMutable());
+      cost_term_args.emplace_back(
+          base_cam.getDistortionMutable()->getParametersMutable());
+      problem_information->setParameterBlockConstant(dummy_intrinsics);
+      problem_information->setParameterBlockConstant(dummy_distortion);
+    }
 
     residual_type = ceres_error_terms::ResidualType::kVisualReprojectionError;
   } else {

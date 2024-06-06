@@ -48,6 +48,9 @@ class OptimizerPlugin : public common::ConsolePluginBaseWithPlotter {
       const pose::Transformation& T_M_S, const pose::Transformation& T_M_T,
       const pose::Transformation& T_M_S2, const pose::Transformation& T_M_T2,
       const pose::Transformation& T_S_T);
+
+  int createCameraDrift();
+  int dumpCameras();
 };
 }  // namespace map_optimization_plugin
 #endif  // MAP_OPTIMIZATION_PLUGIN_OPTIMIZER_PLUGIN_H_

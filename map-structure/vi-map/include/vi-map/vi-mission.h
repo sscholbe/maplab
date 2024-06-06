@@ -189,6 +189,9 @@ class VIMission : public Mission {
 
   void mergeAllSensorResources(const vi_map::VIMission& other);
 
+  // TODO(sscholbe): Define a proper interface
+  aslam::SensorIdList drift_ncamera_ids;
+
  private:
   // A value used to order missions.
   int ordering_;

@@ -94,6 +94,9 @@ DEFINE_bool(
     "visual error terms). Pose graph relaxation on the other hand adds visual "
     "loop closures as edges by default.");
 
+DEFINE_double(ba_appd_weight, 0.0, "The weight of the APPD drift");
+DEFINE_double(ba_vcreg_weight, 0.0, "The weight of the VCReg");
+
 namespace map_optimization {
 ViProblemOptions ViProblemOptions::initFromGFlags() {
   ViProblemOptions options;
@@ -151,6 +154,243 @@ ViProblemOptions ViProblemOptions::initFromGFlags() {
   return options;
 }
 
+struct PinholeAPPDCostFunctor {
+  PinholeAPPDCostFunctor(double weight, int width, int height)
+      : weight_{weight}, width_{width}, height_{height} {}
+
+  template <typename T>
+  bool operator()(
+      const T* const p_ref, const T* const p, const T* const p_hat,
+      T* residual) const {
+    T fx = p[0] + p_ref[0];
+    T fx_hat = p_hat[0] + p_ref[0];
+    T fy = p[1] + p_ref[1];
+    T fy_hat = p_hat[1] + p_ref[1];
+    T cx = p[2] + p_ref[2];
+    T cx_hat = p_hat[2] + p_ref[2];
+    T cy = p[3] + p_ref[3];
+    T cy_hat = p_hat[3] + p_ref[3];
+
+    T fx_ratio = fx_hat / fx;
+    T fy_ratio = fy_hat / fy;
+
+    residual[0] = weight_ * (fx_ratio * cx - cx_hat) / 4.0;
+    residual[1] = weight_ * (fy_ratio * cy - cy_hat) / 4.0;
+
+    residual[2] =
+        weight_ * ((1.0 - fx_ratio) * width_ + fx_ratio * cx - cx_hat) / 4.0;
+    residual[3] =
+        weight_ * ((1.0 - fy_ratio) * height_ + fy_ratio * cy - cy_hat) / 4.0;
+
+    residual[4] = weight_ * (fx_ratio * cx - cx_hat) / 4.0;
+    residual[5] =
+        weight_ * ((1.0 - fy_ratio) * height_ + fy_ratio * cy - cy_hat) / 4.0;
+
+    residual[6] =
+        weight_ * ((1.0 - fx_ratio) * width_ + fx_ratio * cx - cx_hat) / 4.0;
+    residual[7] = weight_ * (fy_ratio * cy - cy_hat) / 4.0;
+
+    return true;
+  }
+
+ private:
+  const double weight_;
+  const double width_;
+  const double height_;
+};
+
+#define NUM_GRID 4
+
+struct DistortionAPPDCostFunctor {
+  DistortionAPPDCostFunctor(double weight, unsigned width, unsigned height)
+      : weight_{weight}, width_{width}, height_{height} {}
+
+  template <typename T>
+  inline void unproject(
+      const T* const I0, const T* const I1, const T* const I2, const T& x,
+      const T& y, T& x_out, T& y_out) const {
+    // intrinsics are delta to C0
+    T avg_fx = I0[0] + (I1[0] + I2[0]) / 2.0;
+    T avg_fy = I0[1] + (I1[0] + I2[0]) / 2.0;
+    T avg_cx = I0[2] + (I1[0] + I2[0]) / 2.0;
+    T avg_cy = I0[3] + (I1[0] + I2[0]) / 2.0;
+    x_out = (x - avg_cx) / avg_fx;
+    y_out = (y - avg_cy) / avg_fy;
+  }
+
+  template <typename T>
+  inline void project(
+      const T* const I0, const T* const D0, const T* const I, const T* const D,
+      const T& x, const T& y, T& x_out, T& y_out) const {
+    // intrinsics and distortion are delta to C0
+    T fx = I0[0];
+    T fy = I0[1];
+    T cx = I0[2];
+    T cy = I0[3];
+    T k1 = D0[0] + D[0];
+    T k2 = D0[1] + D[1];
+    T k3 = D0[2] + D[2];
+    T k4 = D0[3] + D[3];
+
+    T x2 = x * x;
+    T y2 = y * y;
+    T r = ceres::sqrt(x2 + y2);
+
+    T theta = ceres::atan(r);
+    T theta2 = theta * theta;
+    T theta4 = theta2 * theta2;
+    T theta6 = theta2 * theta4;
+    T theta8 = theta4 * theta4;
+    T thetad =
+        theta * (1.0 + k1 * theta2 + k2 * theta4 + k3 * theta6 + k4 * theta8);
+    T scaling = thetad / r;
+
+    x_out = x * scaling * fx + cx;
+    y_out = y * scaling * fy + cy;
+  }
+
+  template <typename T>
+  bool operator()(
+      const T* const I0, const T* const D0, const T* const I1,
+      const T* const D1, const T* const I2, const T* const D2,
+      T* residual) const {
+    int rc = 0;
+    for (int ix = 0; ix <= NUM_GRID - 1; ix++) {
+      for (int iy = 0; iy <= NUM_GRID - 1; iy++) {
+        T ux, uy;
+        unproject(
+            I0, I1, I2, T(width_ * ix / (NUM_GRID - 1)),
+            T(height_ * iy / (NUM_GRID - 1)), ux, uy);
+        T dx1, dy1;
+        project(I0, D0, I1, D1, ux, uy, dx1, dy1);
+        T dx2, dy2;
+        project(I0, D0, I2, D2, ux, uy, dx2, dy2);
+        residual[rc] = weight_ * (dx1 - dx2) / T(NUM_GRID * NUM_GRID);
+        residual[rc + 1] = weight_ * (dy1 - dy2) / T(NUM_GRID * NUM_GRID);
+        rc += 2;
+      }
+    }
+
+    return true;
+  }
+
+ private:
+  const double weight_;
+  const double width_;
+  const double height_;
+};
+
+struct APPDCostFunctor {
+  APPDCostFunctor(double weight, unsigned width, unsigned height)
+      : weight_{weight}, width_{width}, height_{height} {}
+
+  template <typename T>
+  inline void unproject(
+      const T* const I0, const T* const I1, const T* const I2, const T& x,
+      const T& y, T& x_out, T& y_out) const {
+    // intrinsics are delta to C0
+    T avg_fx = I0[0] + (I1[0] + I2[0]) / 2.0;
+    T avg_fy = I0[1] + (I1[1] + I2[1]) / 2.0;
+    T avg_cx = I0[2] + (I1[2] + I2[2]) / 2.0;
+    T avg_cy = I0[3] + (I1[3] + I2[3]) / 2.0;
+    x_out = (x - avg_cx) / avg_fx;
+    y_out = (y - avg_cy) / avg_fy;
+  }
+
+  template <typename T>
+  inline void project(
+      const T* const I0, const T* const D0, const T* const I, const T* const D,
+      const T& x, const T& y, T& x_out, T& y_out) const {
+    // intrinsics and distortion are delta to C0
+    T fx = I0[0] + I[0];
+    T fy = I0[1] + I[1];
+    T cx = I0[2] + I[2];
+    T cy = I0[3] + I[3];
+    T k1 = D0[0] + D[0];
+    T k2 = D0[1] + D[1];
+    T k3 = D0[2] + D[2];
+    T k4 = D0[3] + D[3];
+
+    T x2 = x * x;
+    T y2 = y * y;
+    T r = ceres::sqrt(x2 + y2);
+
+    T theta = ceres::atan(r);
+    T theta2 = theta * theta;
+    T theta4 = theta2 * theta2;
+    T theta6 = theta2 * theta4;
+    T theta8 = theta4 * theta4;
+    T thetad =
+        theta * (1.0 + k1 * theta2 + k2 * theta4 + k3 * theta6 + k4 * theta8);
+    T scaling = thetad / r;
+
+    x_out = x * scaling * fx + cx;
+    y_out = y * scaling * fy + cy;
+  }
+
+  template <typename T>
+  bool operator()(
+      const T* const I0, const T* const D0, const T* const I1,
+      const T* const D1, const T* const I2, const T* const D2,
+      T* residual) const {
+    int rc = 0;
+    for (int ix = 0; ix <= NUM_GRID - 1; ix++) {
+      for (int iy = 0; iy <= NUM_GRID - 1; iy++) {
+        T ux, uy;
+        unproject(
+            I0, I1, I2, T(width_ * ix / (NUM_GRID - 1)),
+            T(height_ * iy / (NUM_GRID - 1)), ux, uy);
+        T dx1, dy1;
+        project(I0, D0, I1, D1, ux, uy, dx1, dy1);
+        T dx2, dy2;
+        project(I0, D0, I2, D2, ux, uy, dx2, dy2);
+        residual[rc] = weight_ * (dx1 - dx2) / T(NUM_GRID * NUM_GRID);
+        residual[rc + 1] = weight_ * (dy1 - dy2) / T(NUM_GRID * NUM_GRID);
+        rc += 2;
+      }
+    }
+
+    return true;
+  }
+
+ private:
+  const double weight_;
+  const double width_;
+  const double height_;
+};
+
+class VarianceCovarianceRegularization {
+ public:
+  // Constructor to initialize regularization parameters
+  VarianceCovarianceRegularization(double lambda) : lambda_(lambda) {}
+
+  template <typename T>
+  bool operator()(
+      const T* const params1, const T* const params2, T* residual) const {
+    // Regularization term for variance (L2 norm of the difference between the
+    // parameter sets)
+    T variance_term = T(0);
+    for (int i = 0; i < 4; ++i) {
+      variance_term += (params1[i] - params2[i]) * (params1[i] - params2[i]);
+    }
+
+    // Covariance term penalizing the product of coefficients
+    T covariance_term = T(0);
+    for (int i = 0; i < 4; ++i) {
+      for (int j = i + 1; j < 4; ++j) {
+        covariance_term += params1[i] * params1[j] + params2[i] * params2[j];
+      }
+    }
+
+    // Combine variance and covariance terms
+    residual[0] = lambda_ * (covariance_term + variance_term);
+    return true;
+  }
+
+ private:
+  const double lambda_;  // Regularization parameter
+};
+
 OptimizationProblem* constructOptimizationProblem(
     const vi_map::MissionIdSet& mission_ids, const ViProblemOptions& options,
     vi_map::VIMap* map) {
@@ -169,6 +409,111 @@ OptimizationProblem* constructOptimizationProblem(
       LOG(WARNING)
           << "WARNING: Visual constraints enabled, but none "
           << "were found, adapting DoF settings of optimization problem...";
+    }
+
+    ceres_error_terms::ProblemInformation* problem_information =
+        CHECK_NOTNULL(problem->getProblemInformationMutable());
+
+    //
+    // Add the drift terms
+    //
+
+    std::shared_ptr<ceres::LossFunction> loss_function(nullptr);
+    vi_map::SensorManager& sensor_manager = map->getSensorManager();
+
+    static double* delta_0_intrinsics = new double[24];
+    static double* delta_0_distortion = new double[24];
+    problem_information->setParameterBlockConstant(delta_0_intrinsics);
+    problem_information->setParameterBlockConstant(delta_0_distortion);
+
+    for (const vi_map::MissionId& mission_id : mission_ids) {
+      vi_map::VIMission& mission = map->getMission(mission_id);
+      if (mission.drift_ncamera_ids.empty()) {
+        continue;
+      }
+
+      LOG(INFO) << "Using camera drift for mission " << mission_id.shortHex()
+                << " with weight " << FLAGS_ba_appd_weight;
+
+      aslam::NCamera::Ptr ncam_r = map->getMissionNCameraPtr(mission_id);
+      aslam::NCamera::Ptr ncam_a = ncam_r;
+
+      for (size_t ncam_idx = 0; ncam_idx < mission.drift_ncamera_ids.size();
+           ncam_idx++) {
+        aslam::NCamera::Ptr ncam_b =
+            sensor_manager.getSensorPtr<aslam::NCamera>(
+                mission.drift_ncamera_ids.at(ncam_idx));
+
+        // For each individual camera, add the drift terms
+        for (size_t cam_idx = 0; cam_idx < ncam_b->getNumCameras(); cam_idx++) {
+          aslam::Camera& cam_r = ncam_r->getCameraMutable(cam_idx);
+          aslam::Camera& cam_a = ncam_a->getCameraMutable(cam_idx);
+          aslam::Camera& cam_b = ncam_b->getCameraMutable(cam_idx);
+
+          // Make distortion constant
+          /*problem_information->setParameterBlockConstantIfPartOfTheProblem(
+              cam_a.getDistortionMutable()->getParametersMutable());
+          problem_information->setParameterBlockConstantIfPartOfTheProblem(
+              cam_b.getDistortionMutable()->getParametersMutable());*/
+
+          // Make intrinsics constant
+          /*problem_information->setParameterBlockConstantIfPartOfTheProblem(
+              cam_a.getParametersMutable());
+          problem_information->setParameterBlockConstantIfPartOfTheProblem(
+              cam_b.getParametersMutable());*/
+
+          bool a_is_ref = ncam_a->getId() == ncam_r->getId();
+
+          /*if (a_is_ref) {
+            // make only base distortion constant
+            problem_information->setParameterBlockConstantIfPartOfTheProblem(
+                cam_a.getDistortionMutable()->getParametersMutable());
+          }*/
+
+          /*std::shared_ptr<ceres::CostFunction> cost_function(
+              new ceres::AutoDiffCostFunction<
+                  PinholeAPPDCostFunctor, 8, 4, 4, 4>(
+                  new PinholeAPPDCostFunctor(
+                      FLAGS_ba_appd_weight, cam_b.imageWidth(),
+                      cam_b.imageHeight())));
+          problem_information->addResidualBlock(
+              ceres_error_terms::ResidualType::kGenericPrior, cost_function,
+              loss_function,
+              {cam_r.getParametersMutable(),
+               a_is_ref ? delta_0_intrinsics : cam_a.getParametersMutable(),
+               cam_b.getParametersMutable()});*/
+
+          std::shared_ptr<ceres::CostFunction> cost_function2(
+              new ceres::AutoDiffCostFunction<
+                  APPDCostFunctor, NUM_GRID * NUM_GRID * 2, 4, 4, 4, 4, 4, 4>(
+                  new APPDCostFunctor(
+                      FLAGS_ba_appd_weight, cam_b.imageWidth(),
+                      cam_b.imageHeight())));
+          problem_information->addResidualBlock(
+              ceres_error_terms::ResidualType::kGenericPrior, cost_function2,
+              loss_function,
+              {cam_r.getParametersMutable(),
+               cam_r.getDistortionMutable()->getParametersMutable(),
+               a_is_ref ? delta_0_intrinsics : cam_a.getParametersMutable(),
+               a_is_ref ? delta_0_distortion
+                        : cam_a.getDistortionMutable()->getParametersMutable(),
+               cam_b.getParametersMutable(),
+               cam_b.getDistortionMutable()->getParametersMutable()});
+
+          // VCREG
+          std::shared_ptr<ceres::CostFunction> cost_function3(
+              new ceres::AutoDiffCostFunction<
+                  VarianceCovarianceRegularization, 1, 4, 4>(
+                  new VarianceCovarianceRegularization(FLAGS_ba_vcreg_weight)));
+          problem_information->addResidualBlock(
+              ceres_error_terms::ResidualType::kGenericPrior, cost_function3,
+              loss_function,
+              {a_is_ref ? delta_0_intrinsics : cam_a.getParametersMutable(),
+               cam_b.getParametersMutable()});
+        }
+
+        ncam_a = ncam_b;
+      }
     }
   }
   size_t num_inertial_constraints_added = 0u;

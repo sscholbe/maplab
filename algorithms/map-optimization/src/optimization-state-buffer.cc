@@ -224,11 +224,22 @@ void OptimizationStateBuffer::importCameraCalibrationsOfMissions(
     const vi_map::VIMap& map, const vi_map::MissionIdSet& mission_ids) {
   size_t num_cameras = 0u;
   std::vector<const aslam::NCamera*> ncameras;
+  const vi_map::SensorManager& sensor_manager = map.getSensorManager();
   for (const vi_map::MissionId& mission_id : mission_ids) {
-    if (map.getMission(mission_id).hasNCamera()) {
+    const vi_map::VIMission& mission = map.getMission(mission_id);
+    if (mission.hasNCamera()) {
       const aslam::NCamera& ncamera = map.getMissionNCamera(mission_id);
       num_cameras += ncamera.getNumCameras();
       ncameras.emplace_back(&ncamera);
+
+      // Add the additional cameras for every vertex if there is a drift
+      for (const aslam::SensorId& drift_ncamera_id :
+           mission.drift_ncamera_ids) {
+        const aslam::NCamera& drift_ncamera =
+            sensor_manager.getSensor<aslam::NCamera>(drift_ncamera_id);
+        num_cameras += drift_ncamera.getNumCameras();
+        ncameras.emplace_back(&drift_ncamera);
+      }
     }
   }
   camera_q_CI__C_p_CI_.resize(Eigen::NoChange, num_cameras);
@@ -268,8 +279,7 @@ void OptimizationStateBuffer::importOtherSensorExtrinsicsOfMissions(
   for (const vi_map::MissionId& mission_id : mission_ids) {
     const vi_map::VIMission& mission = map.getMission(mission_id);
     if (mission.hasAbsolute6DoFSensor()) {
-      other_sensor_ids.emplace_back(
-          mission.getAbsolute6DoFSensor());
+      other_sensor_ids.emplace_back(mission.getAbsolute6DoFSensor());
     }
 
     if (mission.hasOdometry6DoFSensor()) {

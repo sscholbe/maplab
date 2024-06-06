@@ -17,13 +17,14 @@ namespace ceres_error_terms {
 // in JPL convention [x, y, z, w]. This convention corresponds to the internal
 // coefficient storage of Eigen so you can directly pass pointer to your
 // Eigen quaternion data, e.g. your_eigen_quaternion.coeffs().data().
-template <typename CameraType, typename DistortionType>
+template <typename CameraType, typename DistortionType, bool UseDrift = false>
 class VisualReprojectionError
     : public ceres::SizedCostFunction<
           visual::kResidualSize, visual::kPositionBlockSize,
           visual::kPoseBlockSize, visual::kPoseBlockSize,
           visual::kPoseBlockSize, visual::kPoseBlockSize,
           visual::kOrientationBlockSize, visual::kPositionBlockSize,
+          CameraType::parameterCount(), DistortionType::parameterCount(),
           CameraType::parameterCount(), DistortionType::parameterCount()> {
  public:
   // Construct a cost function representing the reprojection error. Sigma is
@@ -60,28 +61,33 @@ class VisualReprojectionError
     kIdxCameraToImuQ,
     kIdxCameraToImuP,
     kIdxCameraIntrinsics,
-    kIdxCameraDistortion
+    kIdxCameraDistortion,
+    kIdxCameraIntrinsicsBase,
+    kIdxCameraDistortionBase
   };
 
   // The representation for Jacobians computed by this object.
-  typedef Eigen::Matrix<double, visual::kResidualSize,
-                        visual::kOrientationBlockSize, Eigen::RowMajor>
+  typedef Eigen::Matrix<
+      double, visual::kResidualSize, visual::kOrientationBlockSize,
+      Eigen::RowMajor>
       OrientationJacobian;
 
-  typedef Eigen::Matrix<double, visual::kResidualSize,
-                        visual::kPositionBlockSize, Eigen::RowMajor>
+  typedef Eigen::Matrix<
+      double, visual::kResidualSize, visual::kPositionBlockSize,
+      Eigen::RowMajor>
       PositionJacobian;
 
-  typedef Eigen::Matrix<double, visual::kResidualSize, visual::kPoseBlockSize,
-                        Eigen::RowMajor>
+  typedef Eigen::Matrix<
+      double, visual::kResidualSize, visual::kPoseBlockSize, Eigen::RowMajor>
       PoseJacobian;
 
-  typedef Eigen::Matrix<double, visual::kResidualSize,
-                        CameraType::parameterCount(), Eigen::RowMajor>
+  typedef Eigen::Matrix<
+      double, visual::kResidualSize, CameraType::parameterCount(),
+      Eigen::RowMajor>
       IntrinsicsJacobian;
 
-  typedef Eigen::Matrix<double, visual::kResidualSize, Eigen::Dynamic,
-                        Eigen::RowMajor>
+  typedef Eigen::Matrix<
+      double, visual::kResidualSize, Eigen::Dynamic, Eigen::RowMajor>
       DistortionJacobian;
 
   Eigen::Vector2d measurement_;

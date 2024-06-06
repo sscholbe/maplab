@@ -8,7 +8,7 @@
 
 namespace ceres_error_terms {
 
-template <template <typename, typename> class ErrorTerm>
+template <template <typename, typename> class ErrorTerm, bool UseDrift = false>
 ceres::CostFunction* createVisualCostFunction(
     const Eigen::Vector2d& measurement, double pixel_sigma,
     ceres_error_terms::LandmarkErrorType error_term_type,

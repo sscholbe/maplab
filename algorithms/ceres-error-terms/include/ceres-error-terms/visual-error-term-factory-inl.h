@@ -17,7 +17,8 @@
 
 namespace ceres_error_terms {
 
-template <template <typename, typename> class ErrorTerm>
+template <
+    template <typename, typename, bool> class ErrorTerm, bool UseDrift = false>
 ceres::CostFunction* createVisualCostFunction(
     const Eigen::Vector2d& measurement, double pixel_sigma,
     ceres_error_terms::LandmarkErrorType error_term_type,
@@ -31,25 +32,25 @@ ceres::CostFunction* createVisualCostFunction(
       aslam::Distortion::Type distortion_type =
           camera->getDistortion().getType();
       switch (distortion_type) {
-        case aslam::Distortion::Type::kNoDistortion:
-          error_term =
-              new ErrorTerm<aslam::PinholeCamera, aslam::NullDistortion>(
-                  measurement, pixel_sigma, error_term_type, derived_camera);
-          break;
+        /*case aslam::Distortion::Type::kNoDistortion:
+          error_term = new ErrorTerm<
+              aslam::PinholeCamera, aslam::NullDistortion, UseDrift>(
+              measurement, pixel_sigma, error_term_type, derived_camera);
+          break;*/
         case aslam::Distortion::Type::kEquidistant:
-          error_term =
-              new ErrorTerm<aslam::PinholeCamera, aslam::EquidistantDistortion>(
-                  measurement, pixel_sigma, error_term_type, derived_camera);
+          error_term = new ErrorTerm<
+              aslam::PinholeCamera, aslam::EquidistantDistortion, UseDrift>(
+              measurement, pixel_sigma, error_term_type, derived_camera);
           break;
         case aslam::Distortion::Type::kRadTan:
-          error_term =
-              new ErrorTerm<aslam::PinholeCamera, aslam::RadTanDistortion>(
-                  measurement, pixel_sigma, error_term_type, derived_camera);
+          error_term = new ErrorTerm<
+              aslam::PinholeCamera, aslam::RadTanDistortion, UseDrift>(
+              measurement, pixel_sigma, error_term_type, derived_camera);
           break;
         case aslam::Distortion::Type::kFisheye:
-          error_term =
-              new ErrorTerm<aslam::PinholeCamera, aslam::FisheyeDistortion>(
-                  measurement, pixel_sigma, error_term_type, derived_camera);
+          error_term = new ErrorTerm<
+              aslam::PinholeCamera, aslam::FisheyeDistortion, UseDrift>(
+              measurement, pixel_sigma, error_term_type, derived_camera);
           break;
         default:
           LOG(FATAL) << "Invalid camera distortion type for ceres error term: "
@@ -63,24 +64,27 @@ ceres::CostFunction* createVisualCostFunction(
       aslam::Distortion::Type distortion_type =
           camera->getDistortion().getType();
       switch (distortion_type) {
-        case aslam::Distortion::Type::kNoDistortion:
-          error_term = new ErrorTerm<aslam::UnifiedProjectionCamera,
-                                     aslam::NullDistortion>(
+        /*case aslam::Distortion::Type::kNoDistortion:
+          error_term = new ErrorTerm<
+              aslam::UnifiedProjectionCamera, aslam::NullDistortion, UseDrift>(
               measurement, pixel_sigma, error_term_type, derived_camera);
-          break;
+          break;*/
         case aslam::Distortion::Type::kEquidistant:
-          error_term = new ErrorTerm<aslam::UnifiedProjectionCamera,
-                                     aslam::EquidistantDistortion>(
+          error_term = new ErrorTerm<
+              aslam::UnifiedProjectionCamera, aslam::EquidistantDistortion,
+              UseDrift>(
               measurement, pixel_sigma, error_term_type, derived_camera);
           break;
         case aslam::Distortion::Type::kRadTan:
-          error_term = new ErrorTerm<aslam::UnifiedProjectionCamera,
-                                     aslam::RadTanDistortion>(
+          error_term = new ErrorTerm<
+              aslam::UnifiedProjectionCamera, aslam::RadTanDistortion,
+              UseDrift>(
               measurement, pixel_sigma, error_term_type, derived_camera);
           break;
         case aslam::Distortion::Type::kFisheye:
-          error_term = new ErrorTerm<aslam::UnifiedProjectionCamera,
-                                     aslam::FisheyeDistortion>(
+          error_term = new ErrorTerm<
+              aslam::UnifiedProjectionCamera, aslam::FisheyeDistortion,
+              UseDrift>(
               measurement, pixel_sigma, error_term_type, derived_camera);
           break;
         default:

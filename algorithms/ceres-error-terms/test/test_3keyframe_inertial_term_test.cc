@@ -39,11 +39,13 @@ class PosegraphErrorTerms : public ::testing::Test {
     Eigen::Matrix<double, 2 * imu_integrator::kImuReadingSize, 1>
         debiased_imu_readings;
     Eigen::Matrix<double, imu_integrator::kStateSize, 1> next_state;
-    Eigen::Matrix<double, imu_integrator::kErrorStateSize,
-                  imu_integrator::kErrorStateSize>
+    Eigen::Matrix<
+        double, imu_integrator::kErrorStateSize,
+        imu_integrator::kErrorStateSize>
         next_phi;
-    Eigen::Matrix<double, imu_integrator::kErrorStateSize,
-                  imu_integrator::kErrorStateSize>
+    Eigen::Matrix<
+        double, imu_integrator::kErrorStateSize,
+        imu_integrator::kErrorStateSize>
         next_cov;
 
     current_state.setZero();
@@ -183,7 +185,6 @@ void PosegraphErrorTerms::solve() {
   options.function_tolerance = 1e-50;
   options.parameter_tolerance = 1e-50;
   options.num_threads = 8;
-  options.num_linear_solver_threads = 8;
 
   ceres::Solve(options, &problem_, &summary_);
 

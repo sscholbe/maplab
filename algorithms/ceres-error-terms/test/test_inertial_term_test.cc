@@ -100,7 +100,6 @@ void PosegraphErrorTerms::solve() {
   options.function_tolerance = 1e-50;
   options.parameter_tolerance = 1e-50;
   options.num_threads = 8;
-  options.num_linear_solver_threads = 8;
 
   ceres::Solve(options, &problem_, &summary_);
 
