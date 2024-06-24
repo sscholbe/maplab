@@ -95,7 +95,12 @@ DEFINE_bool(
     "loop closures as edges by default.");
 
 DEFINE_double(ba_appd_weight, 0.0, "The weight of the APPD drift");
-DEFINE_double(ba_vcreg_weight, 0.0, "The weight of the VCReg");
+DEFINE_double(ba_huber_delta, 0.25, "The weight of the VCReg");
+DEFINE_string(
+    ba_constant_intrinsics_drift, "",
+    "Constant intrinsics (for drift cameras)");
+DEFINE_string(
+    ba_constant_intrinsics_base, "", "Constant intrinsics (for base camera)");
 
 namespace map_optimization {
 ViProblemOptions ViProblemOptions::initFromGFlags() {
@@ -154,140 +159,16 @@ ViProblemOptions ViProblemOptions::initFromGFlags() {
   return options;
 }
 
-struct PinholeAPPDCostFunctor {
-  PinholeAPPDCostFunctor(double weight, int width, int height)
-      : weight_{weight}, width_{width}, height_{height} {}
+#define NUM_GRID 6
 
-  template <typename T>
-  bool operator()(
-      const T* const p_ref, const T* const p, const T* const p_hat,
-      T* residual) const {
-    T fx = p[0] + p_ref[0];
-    T fx_hat = p_hat[0] + p_ref[0];
-    T fy = p[1] + p_ref[1];
-    T fy_hat = p_hat[1] + p_ref[1];
-    T cx = p[2] + p_ref[2];
-    T cx_hat = p_hat[2] + p_ref[2];
-    T cy = p[3] + p_ref[3];
-    T cy_hat = p_hat[3] + p_ref[3];
-
-    T fx_ratio = fx_hat / fx;
-    T fy_ratio = fy_hat / fy;
-
-    residual[0] = weight_ * (fx_ratio * cx - cx_hat) / 4.0;
-    residual[1] = weight_ * (fy_ratio * cy - cy_hat) / 4.0;
-
-    residual[2] =
-        weight_ * ((1.0 - fx_ratio) * width_ + fx_ratio * cx - cx_hat) / 4.0;
-    residual[3] =
-        weight_ * ((1.0 - fy_ratio) * height_ + fy_ratio * cy - cy_hat) / 4.0;
-
-    residual[4] = weight_ * (fx_ratio * cx - cx_hat) / 4.0;
-    residual[5] =
-        weight_ * ((1.0 - fy_ratio) * height_ + fy_ratio * cy - cy_hat) / 4.0;
-
-    residual[6] =
-        weight_ * ((1.0 - fx_ratio) * width_ + fx_ratio * cx - cx_hat) / 4.0;
-    residual[7] = weight_ * (fy_ratio * cy - cy_hat) / 4.0;
-
-    return true;
-  }
-
- private:
-  const double weight_;
-  const double width_;
-  const double height_;
-};
-
-#define NUM_GRID 4
-
-struct DistortionAPPDCostFunctor {
-  DistortionAPPDCostFunctor(double weight, unsigned width, unsigned height)
+struct APPDCostFunctor3 {
+  APPDCostFunctor3(double weight, unsigned width, unsigned height)
       : weight_{weight}, width_{width}, height_{height} {}
 
   template <typename T>
   inline void unproject(
       const T* const I0, const T* const I1, const T* const I2, const T& x,
-      const T& y, T& x_out, T& y_out) const {
-    // intrinsics are delta to C0
-    T avg_fx = I0[0] + (I1[0] + I2[0]) / 2.0;
-    T avg_fy = I0[1] + (I1[0] + I2[0]) / 2.0;
-    T avg_cx = I0[2] + (I1[0] + I2[0]) / 2.0;
-    T avg_cy = I0[3] + (I1[0] + I2[0]) / 2.0;
-    x_out = (x - avg_cx) / avg_fx;
-    y_out = (y - avg_cy) / avg_fy;
-  }
-
-  template <typename T>
-  inline void project(
-      const T* const I0, const T* const D0, const T* const I, const T* const D,
-      const T& x, const T& y, T& x_out, T& y_out) const {
-    // intrinsics and distortion are delta to C0
-    T fx = I0[0];
-    T fy = I0[1];
-    T cx = I0[2];
-    T cy = I0[3];
-    T k1 = D0[0] + D[0];
-    T k2 = D0[1] + D[1];
-    T k3 = D0[2] + D[2];
-    T k4 = D0[3] + D[3];
-
-    T x2 = x * x;
-    T y2 = y * y;
-    T r = ceres::sqrt(x2 + y2);
-
-    T theta = ceres::atan(r);
-    T theta2 = theta * theta;
-    T theta4 = theta2 * theta2;
-    T theta6 = theta2 * theta4;
-    T theta8 = theta4 * theta4;
-    T thetad =
-        theta * (1.0 + k1 * theta2 + k2 * theta4 + k3 * theta6 + k4 * theta8);
-    T scaling = thetad / r;
-
-    x_out = x * scaling * fx + cx;
-    y_out = y * scaling * fy + cy;
-  }
-
-  template <typename T>
-  bool operator()(
-      const T* const I0, const T* const D0, const T* const I1,
-      const T* const D1, const T* const I2, const T* const D2,
-      T* residual) const {
-    int rc = 0;
-    for (int ix = 0; ix <= NUM_GRID - 1; ix++) {
-      for (int iy = 0; iy <= NUM_GRID - 1; iy++) {
-        T ux, uy;
-        unproject(
-            I0, I1, I2, T(width_ * ix / (NUM_GRID - 1)),
-            T(height_ * iy / (NUM_GRID - 1)), ux, uy);
-        T dx1, dy1;
-        project(I0, D0, I1, D1, ux, uy, dx1, dy1);
-        T dx2, dy2;
-        project(I0, D0, I2, D2, ux, uy, dx2, dy2);
-        residual[rc] = weight_ * (dx1 - dx2) / T(NUM_GRID * NUM_GRID);
-        residual[rc + 1] = weight_ * (dy1 - dy2) / T(NUM_GRID * NUM_GRID);
-        rc += 2;
-      }
-    }
-
-    return true;
-  }
-
- private:
-  const double weight_;
-  const double width_;
-  const double height_;
-};
-
-struct APPDCostFunctor {
-  APPDCostFunctor(double weight, unsigned width, unsigned height)
-      : weight_{weight}, width_{width}, height_{height} {}
-
-  template <typename T>
-  inline void unproject(
-      const T* const I0, const T* const I1, const T* const I2, const T& x,
-      const T& y, T& x_out, T& y_out) const {
+      const T& y, T& x_out, T& y_out, T& z_out) const {
     // intrinsics are delta to C0
     T avg_fx = I0[0] + (I1[0] + I2[0]) / 2.0;
     T avg_fy = I0[1] + (I1[1] + I2[1]) / 2.0;
@@ -295,12 +176,19 @@ struct APPDCostFunctor {
     T avg_cy = I0[3] + (I1[3] + I2[3]) / 2.0;
     x_out = (x - avg_cx) / avg_fx;
     y_out = (y - avg_cy) / avg_fy;
+    z_out = T(1.0);
+    T div = T(
+        1.0);  // / ceres::sqrt(x_out * x_out + y_out * y_out + z_out * z_out);
+    x_out *= div;
+    y_out *= div;
+    z_out *= div;
   }
 
   template <typename T>
   inline void project(
       const T* const I0, const T* const D0, const T* const I, const T* const D,
-      const T& x, const T& y, T& x_out, T& y_out) const {
+      const T& x, const T& y, const T& z, T& x_out, T& y_out,
+      T& scale_out) const {
     // intrinsics and distortion are delta to C0
     T fx = I0[0] + I[0];
     T fy = I0[1] + I[1];
@@ -311,8 +199,10 @@ struct APPDCostFunctor {
     T k3 = D0[2] + D[2];
     T k4 = D0[3] + D[3];
 
-    T x2 = x * x;
-    T y2 = y * y;
+    T x_z = x;  // / z;
+    T y_z = y;  // / z;
+    T x2 = x_z * x_z;
+    T y2 = y_z * y_z;
     T r = ceres::sqrt(x2 + y2);
 
     T theta = ceres::atan(r);
@@ -324,8 +214,9 @@ struct APPDCostFunctor {
         theta * (1.0 + k1 * theta2 + k2 * theta4 + k3 * theta6 + k4 * theta8);
     T scaling = thetad / r;
 
-    x_out = x * scaling * fx + cx;
-    y_out = y * scaling * fy + cy;
+    scale_out = scaling;
+    x_out = x_z * fx + cx;
+    y_out = y_z * fy + cy;
   }
 
   template <typename T>
@@ -336,17 +227,21 @@ struct APPDCostFunctor {
     int rc = 0;
     for (int ix = 0; ix <= NUM_GRID - 1; ix++) {
       for (int iy = 0; iy <= NUM_GRID - 1; iy++) {
-        T ux, uy;
+        T ux, uy, uz;
         unproject(
             I0, I1, I2, T(width_ * ix / (NUM_GRID - 1)),
-            T(height_ * iy / (NUM_GRID - 1)), ux, uy);
-        T dx1, dy1;
-        project(I0, D0, I1, D1, ux, uy, dx1, dy1);
-        T dx2, dy2;
-        project(I0, D0, I2, D2, ux, uy, dx2, dy2);
+            T(height_ * iy / (NUM_GRID - 1)), ux, uy, uz);
+        T dx1, dy1, sc1;
+        project(I0, D0, I1, D1, ux, uy, uz, dx1, dy1, sc1);
+        T dx2, dy2, sc2;
+        project(I0, D0, I2, D2, ux, uy, uz, dx2, dy2, sc2);
         residual[rc] = weight_ * (dx1 - dx2) / T(NUM_GRID * NUM_GRID);
         residual[rc + 1] = weight_ * (dy1 - dy2) / T(NUM_GRID * NUM_GRID);
-        rc += 2;
+        residual[rc + 2] =
+            weight_ * T(450.0) * (sc1 - sc2) / T(NUM_GRID * NUM_GRID);
+        residual[rc + 3] =
+            weight_ * T(450.0) * (sc1 - sc2) / T(NUM_GRID * NUM_GRID);
+        rc += 4;
       }
     }
 
@@ -359,37 +254,17 @@ struct APPDCostFunctor {
   const double height_;
 };
 
-class VarianceCovarianceRegularization {
- public:
-  // Constructor to initialize regularization parameters
-  VarianceCovarianceRegularization(double lambda) : lambda_(lambda) {}
+std::vector<std::string> splitStringByComma(const std::string& str) {
+  std::vector<std::string> result;
+  std::stringstream ss(str);
+  std::string item;
 
-  template <typename T>
-  bool operator()(
-      const T* const params1, const T* const params2, T* residual) const {
-    // Regularization term for variance (L2 norm of the difference between the
-    // parameter sets)
-    T variance_term = T(0);
-    for (int i = 0; i < 4; ++i) {
-      variance_term += (params1[i] - params2[i]) * (params1[i] - params2[i]);
-    }
-
-    // Covariance term penalizing the product of coefficients
-    T covariance_term = T(0);
-    for (int i = 0; i < 4; ++i) {
-      for (int j = i + 1; j < 4; ++j) {
-        covariance_term += params1[i] * params1[j] + params2[i] * params2[j];
-      }
-    }
-
-    // Combine variance and covariance terms
-    residual[0] = lambda_ * (covariance_term + variance_term);
-    return true;
+  while (std::getline(ss, item, ',')) {
+    result.push_back(item);
   }
 
- private:
-  const double lambda_;  // Regularization parameter
-};
+  return result;
+}
 
 OptimizationProblem* constructOptimizationProblem(
     const vi_map::MissionIdSet& mission_ids, const ViProblemOptions& options,
@@ -418,7 +293,9 @@ OptimizationProblem* constructOptimizationProblem(
     // Add the drift terms
     //
 
-    std::shared_ptr<ceres::LossFunction> loss_function(nullptr);
+    std::shared_ptr<ceres::LossFunction> loss_function(nullptr); /*
+        new ceres::HuberLoss(FLAGS_ba_huber_delta)*/
+
     vi_map::SensorManager& sensor_manager = map->getSensorManager();
 
     static double* delta_0_intrinsics = new double[24];
@@ -438,11 +315,110 @@ OptimizationProblem* constructOptimizationProblem(
       aslam::NCamera::Ptr ncam_r = map->getMissionNCameraPtr(mission_id);
       aslam::NCamera::Ptr ncam_a = ncam_r;
 
+      // Might bug if different resolutions
+      std::shared_ptr<ceres::CostFunction> cost_function2(
+          new ceres::AutoDiffCostFunction<
+              APPDCostFunctor3, NUM_GRID * NUM_GRID * 4, 4, 4, 4, 4, 4, 4>(
+              new APPDCostFunctor3(
+                  FLAGS_ba_appd_weight, ncam_r->getCamera(0).imageWidth(),
+                  ncam_r->getCamera(0).imageHeight())));
+
+      std::vector<std::string> fixs_base =
+          splitStringByComma(FLAGS_ba_constant_intrinsics_base);
+      std::vector<std::string> fixs_drift =
+          splitStringByComma(FLAGS_ba_constant_intrinsics_drift);
+
+      std::vector<int> fix_base_intrinsics;
+      std::vector<int> fix_base_distortion;
+      std::vector<int> fix_drift_intrinsics;
+      std::vector<int> fix_drift_distortion;
+      for (std::string& f : fixs_base) {
+        if (f == "fx") {
+          fix_base_intrinsics.push_back(0);
+        } else if (f == "fy") {
+          fix_base_intrinsics.push_back(1);
+        } else if (f == "cx") {
+          fix_base_intrinsics.push_back(2);
+        } else if (f == "cy") {
+          fix_base_intrinsics.push_back(3);
+        } else if (f == "k1") {
+          fix_base_distortion.push_back(0);
+        } else if (f == "k2") {
+          fix_base_distortion.push_back(1);
+        } else if (f == "k3") {
+          fix_base_distortion.push_back(2);
+        } else if (f == "k4") {
+          fix_base_distortion.push_back(3);
+        }
+      }
+      for (std::string& f : fixs_drift) {
+        if (f == "fx") {
+          fix_drift_intrinsics.push_back(0);
+        } else if (f == "fy") {
+          fix_drift_intrinsics.push_back(1);
+        } else if (f == "cx") {
+          fix_drift_intrinsics.push_back(2);
+        } else if (f == "cy") {
+          fix_drift_intrinsics.push_back(3);
+        } else if (f == "k1") {
+          fix_drift_distortion.push_back(0);
+        } else if (f == "k2") {
+          fix_drift_distortion.push_back(1);
+        } else if (f == "k3") {
+          fix_drift_distortion.push_back(2);
+        } else if (f == "k4") {
+          fix_drift_distortion.push_back(3);
+        }
+      }
+
+      std::shared_ptr<ceres::LocalParameterization> par_base_intrinsics(
+          new ceres::SubsetParameterization(4, fix_base_intrinsics));
+      std::shared_ptr<ceres::LocalParameterization> par_base_distortion(
+          new ceres::SubsetParameterization(4, fix_base_distortion));
+      std::shared_ptr<ceres::LocalParameterization> par_drift_intrinsics(
+          new ceres::SubsetParameterization(4, fix_drift_intrinsics));
+      std::shared_ptr<ceres::LocalParameterization> par_drift_distortion(
+          new ceres::SubsetParameterization(4, fix_drift_distortion));
+
+      /*std::shared_ptr<ceres::LocalParameterization> fix_principal(
+          new SingleVariableConstantParameterization());*/
+
+      /*pose_graph::VertexIdList vertex_ids;
+      map->getAllVertexIdsInMissionAlongGraph(mission_id, &vertex_ids);
+
+      size_t total_keypoints = 0;
+      size_t num_cameras = 0;
+
+      std::vector<size_t> keypoints;
+
+      for (size_t ncam_idx = 0; ncam_idx < mission.drift_ncamera_ids.size();
+           ncam_idx++) {
+        auto& vertex = map->getVertex(vertex_ids.at(ncam_idx + 1));
+        aslam::NCamera::Ptr ncam = sensor_manager.getSensorPtr<aslam::NCamera>(
+            mission.drift_ncamera_ids.at(ncam_idx));
+
+        for (size_t cam_idx = 0; cam_idx < ncam->getNumCameras(); cam_idx++) {
+          const size_t num_keypoints =
+              vertex.getVisualFrame(cam_idx).getNumKeypointMeasurements();
+          total_keypoints += num_keypoints;
+          keypoints.push_back(num_keypoints);
+          num_cameras++;
+        }
+      }
+
+      double avg_keypoints = total_keypoints / double(num_cameras);
+      std::sort(keypoints.begin(), keypoints.end());
+
+      size_t median_keypoints = keypoints.at(keypoints.size() / 2);
+      LOG(INFO) << "Median keypoints: " << median_keypoints
+                << ", average keypoints: " << avg_keypoints;*/
+
       for (size_t ncam_idx = 0; ncam_idx < mission.drift_ncamera_ids.size();
            ncam_idx++) {
         aslam::NCamera::Ptr ncam_b =
             sensor_manager.getSensorPtr<aslam::NCamera>(
                 mission.drift_ncamera_ids.at(ncam_idx));
+        // auto& vertex = map->getVertex(vertex_ids.at(ncam_idx + 1));
 
         // For each individual camera, add the drift terms
         for (size_t cam_idx = 0; cam_idx < ncam_b->getNumCameras(); cam_idx++) {
@@ -450,11 +426,25 @@ OptimizationProblem* constructOptimizationProblem(
           aslam::Camera& cam_a = ncam_a->getCameraMutable(cam_idx);
           aslam::Camera& cam_b = ncam_b->getCameraMutable(cam_idx);
 
+          /*const size_t num_keypoints =
+              vertex.getVisualFrame(cam_idx).getNumKeypointMeasurements();*/
+
           // Make distortion constant
           /*problem_information->setParameterBlockConstantIfPartOfTheProblem(
               cam_a.getDistortionMutable()->getParametersMutable());
           problem_information->setParameterBlockConstantIfPartOfTheProblem(
               cam_b.getDistortionMutable()->getParametersMutable());*/
+
+          // Make principal point constant
+          /*problem_information->setParameterization(
+              cam_b.getParametersMutable(), fix_principal);*/
+
+          /* Make k2-k4 constant */
+          /*problem_information->setParameterization(
+              cam_a.getDistortionMutable()->getParametersMutable(), fix_k2k3k4);
+          problem_information->setParameterization(
+              cam_b.getDistortionMutable()->getParametersMutable(),
+          fix_k2k3k4);*/
 
           // Make intrinsics constant
           /*problem_information->setParameterBlockConstantIfPartOfTheProblem(
@@ -464,11 +454,19 @@ OptimizationProblem* constructOptimizationProblem(
 
           bool a_is_ref = ncam_a->getId() == ncam_r->getId();
 
-          /*if (a_is_ref) {
-            // make only base distortion constant
-            problem_information->setParameterBlockConstantIfPartOfTheProblem(
-                cam_a.getDistortionMutable()->getParametersMutable());
-          }*/
+          if (a_is_ref) {
+            problem_information->setParameterization(
+                cam_a.getDistortionMutable()->getParametersMutable(),
+                par_base_distortion);
+            problem_information->setParameterization(
+                cam_a.getParametersMutable(), par_base_intrinsics);
+          }
+
+          problem_information->setParameterization(
+              cam_b.getDistortionMutable()->getParametersMutable(),
+              par_drift_distortion);
+          problem_information->setParameterization(
+              cam_b.getParametersMutable(), par_drift_intrinsics);
 
           /*std::shared_ptr<ceres::CostFunction> cost_function(
               new ceres::AutoDiffCostFunction<
@@ -483,12 +481,6 @@ OptimizationProblem* constructOptimizationProblem(
                a_is_ref ? delta_0_intrinsics : cam_a.getParametersMutable(),
                cam_b.getParametersMutable()});*/
 
-          std::shared_ptr<ceres::CostFunction> cost_function2(
-              new ceres::AutoDiffCostFunction<
-                  APPDCostFunctor, NUM_GRID * NUM_GRID * 2, 4, 4, 4, 4, 4, 4>(
-                  new APPDCostFunctor(
-                      FLAGS_ba_appd_weight, cam_b.imageWidth(),
-                      cam_b.imageHeight())));
           problem_information->addResidualBlock(
               ceres_error_terms::ResidualType::kGenericPrior, cost_function2,
               loss_function,
@@ -501,7 +493,7 @@ OptimizationProblem* constructOptimizationProblem(
                cam_b.getDistortionMutable()->getParametersMutable()});
 
           // VCREG
-          std::shared_ptr<ceres::CostFunction> cost_function3(
+          /*std::shared_ptr<ceres::CostFunction> cost_function3(
               new ceres::AutoDiffCostFunction<
                   VarianceCovarianceRegularization, 1, 4, 4>(
                   new VarianceCovarianceRegularization(FLAGS_ba_vcreg_weight)));
@@ -509,7 +501,7 @@ OptimizationProblem* constructOptimizationProblem(
               ceres_error_terms::ResidualType::kGenericPrior, cost_function3,
               loss_function,
               {a_is_ref ? delta_0_intrinsics : cam_a.getParametersMutable(),
-               cam_b.getParametersMutable()});
+               cam_b.getParametersMutable()});*/
         }
 
         ncam_a = ncam_b;

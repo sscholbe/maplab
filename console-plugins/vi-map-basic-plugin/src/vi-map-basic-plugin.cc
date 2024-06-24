@@ -413,14 +413,14 @@ int VIMapBasicPlugin::deleteMap() {
     return common::kUnknownError;
   }
 
-  if (common::askUserForYesNoOverConsole(
+  /*if (common::askUserForYesNoOverConsole(
           "Do you really want to delete the map \"" + selected_map_key +
-          "\" from the storage?")) {
-    map_manager.deleteMap(selected_map_key);
-    console_->removeMapKeyFromAutoCompletion(selected_map_key);
-    const std::string kNoMapSelected = "";
-    console_->setSelectedMapKey(kNoMapSelected);
-  }
+          "\" from the storage?")) {*/
+  map_manager.deleteMap(selected_map_key);
+  console_->removeMapKeyFromAutoCompletion(selected_map_key);
+  const std::string kNoMapSelected = "";
+  console_->setSelectedMapKey(kNoMapSelected);
+  /*}*/
   return common::kSuccess;
 }
 

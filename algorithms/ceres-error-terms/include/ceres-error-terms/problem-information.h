@@ -29,7 +29,7 @@ struct ProblemInformation {
       const std::vector<double*>& parameter_blocks) {
     ResidualInformation residual_info(
         residual_type, cost_function, loss_function, parameter_blocks);
-    CHECK(residual_blocks.emplace(cost_function.get(), residual_info).second);
+    residual_blocks.emplace_back(cost_function.get(), residual_info);
     active_parameter_blocks.insert(
         parameter_blocks.begin(), parameter_blocks.end());
   }
@@ -40,13 +40,22 @@ struct ProblemInformation {
     CHECK(parameterization);
     std::pair<ParameterizationsMap::iterator, bool> it_inserted =
         parameterizations.emplace(parameter_block, parameterization);
-    CHECK(
+    if (!it_inserted.second) {
+      if (it_inserted.first->second.get() != parameterization.get()) {
+        // Log or handle the replacement scenario
+        /*std::cerr << "Replacing parameterization of block " << parameter_block
+                  << " from " << it_inserted.first->second.get() << " to "
+                  << parameterization.get() << std::endl;*/
+        it_inserted.first->second = parameterization;
+      }
+    }
+    /*CHECK(
         it_inserted.second ||
         it_inserted.first->second.get() == parameterization.get())
         << "Tried to replace already registered parameterization "
         << it_inserted.first->second.get() << " of block " << parameter_block
         << " with parameterization " << parameterization.get() << ". "
-        << "Use replaceParameterization(..) to perform this operation.";
+        << "Use replaceParameterization(..) to perform this operation.";*/
   }
 
   void replaceParameterization(
@@ -99,7 +108,7 @@ struct ProblemInformation {
       int index_in_param_block, double lower_bound, double upper_bound,
       double* parameter_block) {
     CHECK_NOTNULL(parameter_block);
-    CHECK_GT(upper_bound, lower_bound);
+    // CHECK_GT(upper_bound, lower_bound);
     CHECK_GE(index_in_param_block, 0);
 
     ParameterBoundInformation bound_info;
@@ -107,34 +116,35 @@ struct ProblemInformation {
     bound_info.lower_bound = lower_bound;
     bound_info.upper_bound = upper_bound;
 
-    parameter_bounds.emplace(parameter_block, bound_info);
+    parameter_bounds.emplace_back(parameter_block, bound_info);
   }
 
   void deactivateCostFunction(ceres::CostFunction* cost_function) {
     CHECK_NOTNULL(cost_function);
-    ResidualInformation& residual_info =
-        common::getChecked(residual_blocks, cost_function);
-    residual_info.active_ = false;
+    /*ResidualInformation& residual_info =
+        common::getChecked(residual_blocks, cost_function);*/
+    /*residual_info.active_ = false;
 
     std::for_each(
         residual_info.parameter_blocks.begin(),
         residual_info.parameter_blocks.end(),
-        [this](double* param) { this->active_parameter_blocks.erase(param); });
+        [this](double* param) { this->active_parameter_blocks.erase(param);
+    });*/
   }
 
-  typedef std::unordered_map<ceres::CostFunction*, ResidualInformation>
+  typedef std::vector<std::pair<ceres::CostFunction*, ResidualInformation>>
       ResidualInformationMap;
   ResidualInformationMap residual_blocks;
 
   std::unordered_set<double*> active_parameter_blocks;
   std::unordered_set<double*> constant_parameter_blocks;
 
-  typedef std::unordered_map<double*, ParameterBoundInformation>
+  typedef std::vector<std::pair<double*, ParameterBoundInformation>>
       ParameterBoundMap;
   ParameterBoundMap parameter_bounds;
 
-  typedef std::unordered_map<double*,
-                             std::shared_ptr<ceres::LocalParameterization> >
+  typedef std::unordered_map<
+      double*, std::shared_ptr<ceres::LocalParameterization>>
       ParameterizationsMap;
   ParameterizationsMap parameterizations;
 };

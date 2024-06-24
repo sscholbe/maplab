@@ -1,5 +1,6 @@
 #include "map-optimization-plugin/optimizer-plugin.h"
 
+#include <Eigen/Dense>
 #include <ceres/ceres.h>
 #include <console-common/basic-console-plugin.h>
 #include <console-common/console.h>
@@ -380,6 +381,9 @@ int OptimizerPlugin::dumpCameras() {
         "distortion*"
      << std::endl;
 
+  // std::ofstream of_rays(FLAGS_dump_camera_file + std::string(".rays"));
+  // of << "# x y success rx ry rz" << std::endl;
+
   vi_map::VIMapManager map_manager;
   vi_map::VIMapManager::MapWriteAccess map =
       map_manager.getMapWriteAccess(selected_map_key);
@@ -424,6 +428,22 @@ int OptimizerPlugin::dumpCameras() {
           of << " " << dist(i);
         }
         of << std::endl;
+
+        /*// export rays
+        of_rays << std::fixed << std::setprecision(8);
+
+        for (int x = 0; x <= cam.imageWidth(); x += 10) {
+          for (int y = 0; y <= cam.imageHeight(); y += 10) {
+            Eigen::Vector2d keypoint_measurement;
+            keypoint_measurement.x() = double(x);
+            keypoint_measurement.y() = double(y);
+            const Eigen::Vector2d& piss = keypoint_measurement;
+            Eigen::Vector3d C_ray;
+            bool succ = cam.backProject3(piss, &C_ray);
+            of_rays << x << " " << y << " " << succ << " " << C_ray.x() << " "
+                    << C_ray.y() << " " << C_ray.z() << std::endl;
+          }
+        }*/
       }
     }
   }
